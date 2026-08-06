@@ -61,3 +61,4 @@ robot:
     near_clip_m: 0.01
     far_clip_m: 10.0
     encoding: rgba8
+    baseline_m: 0.006

@@ -36,7 +36,9 @@ class RobotConfig:
     kinematics_manifest: Path | None = None
 
 
-def load_robot_config(path: str | Path, kinematics_manifest: str | Path | None = None) -> RobotConfig:
+def load_robot_config(path: str | Path, kinematics_manifest: str | Path | None = None,
+                      base_position: Any | None = None,
+                      base_orientation_xyzw: Any | None = None) -> RobotConfig:
     """Load and validate one robot YAML configuration."""
 
     source = Path(path)
@@ -86,6 +88,15 @@ def load_robot_config(path: str | Path, kinematics_manifest: str | Path | None =
     for value, joint in zip(home, joints):
         if not joint.lower <= value <= joint.upper:
             raise ValueError(f"{source}: home position exceeds limits for {joint.name!r}")
+
+    if base_position is not None:
+        position = np.asarray(base_position, dtype=float)
+        if position.shape != (3,):
+            raise ValueError(f"{source}: overridden base position must have three values")
+    if base_orientation_xyzw is not None:
+        orientation = np.asarray(base_orientation_xyzw, dtype=float)
+        if orientation.shape != (4,) or np.linalg.norm(orientation) == 0.0:
+            raise ValueError(f"{source}: overridden base orientation must be a non-zero quaternion")
 
     return RobotConfig(
         name=str(robot["name"]),

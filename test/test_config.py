@@ -12,7 +12,7 @@ def test_psm_config_loads():
     config = load_robot_config(ROOT / "config/PSM1.yaml")
     assert config.name == "PSM1"
     assert [joint.name for joint in config.joints] == ["yaw", "pitch", "insertion", "roll", "wrist_pitch", "wrist_yaw"]
-    np.testing.assert_allclose(config.home_position, [0.0, 0.0, 0.08, 0.0, 0.0, 0.0])
+    np.testing.assert_allclose(config.home_position, [0.0, 0.0, 0.12, 0.0, 0.0, 0.0])
 
 
 def test_ecm_config_loads():

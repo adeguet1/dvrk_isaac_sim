@@ -44,7 +44,7 @@ robot:
       upper: 1.39626
       velocity: 0.4
 
-  home_position: [0.0, 0.0, 0.08, 0.0, 0.0, 0.0]
+  home_position: [0.0, 0.0, 0.12, 0.0, 0.0, 0.0]
 
   asset:
     instrument: "420006"

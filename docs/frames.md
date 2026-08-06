@@ -57,7 +57,7 @@ The ECM camera must be attached to `ECM_optical`, not directly to the mechanical
 
 The simulator renders the endoscope perspective from a camera attached to `ECM_optical`. Camera pose follows the kinematic ECM state, including yaw, pitch, insertion, and roll.
 
-The rendering pipeline provides configurable image dimensions, field of view, clipping planes, simulation-time timestamps, and camera calibration information. Stereo output may be added later without changing the ECM kinematic interface.
+The rendering pipeline provides configurable image dimensions, field of view, clipping planes, simulation-time timestamps, and camera calibration information. Stereo output is selected at launch time and uses the same ECM optical pose with a configurable baseline.
 
 ROS image publication uses `image_transport` conventions. Raw image and camera information are the stable base interfaces; compressed transports are optional transport plugins.
 
@@ -66,6 +66,8 @@ The initial configurable topics are:
 ```text
 /ECM/image_raw
 /ECM/camera_info
+
+For stereo, the corresponding topics are `/ECM/left/image_raw`, `/ECM/left/camera_info`, `/ECM/right/image_raw`, and `/ECM/right/camera_info`.
 ```
 
 The implementation should preserve the option to support dVRK-style left/right topic names later.

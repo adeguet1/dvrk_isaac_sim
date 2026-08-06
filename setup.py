@@ -29,8 +29,11 @@ setup(
             "config/scenes/ECM_PSM1_PSM2_PSM3.yaml",
         ]),
         (f"share/{package_name}/launch", ["launch/run_sim.launch.py"]),
-        (f"share/{package_name}/scripts", ["scripts/run_sim.py"]),
-        (f"share/{package_name}/scripts", ["scripts/convert_dvrk_model.py"]),
+        (f"share/{package_name}/scripts", [
+            "scripts/run_sim.py",
+            "scripts/convert_dvrk_model.py",
+            "scripts/generate_cart_frames.py",
+        ]),
     ],
     install_requires=["setuptools", "numpy", "PyYAML"],
     zip_safe=True,

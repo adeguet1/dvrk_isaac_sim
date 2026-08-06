@@ -161,6 +161,39 @@ class CrtkRosComponent:
         )
         self._publish_operating_state(node.get_clock().now().to_msg())
 
+    @property
+    def operating_state(self) -> str:
+        """Current CRTK operating-state name for GUI and diagnostics."""
+        return self._operating_state.state
+
+    @property
+    def is_homed(self) -> bool:
+        return self._operating_state.is_homed
+
+    def command_state(self, command: str) -> bool:
+        """Apply a state command through the same path as ROS state_command."""
+        success, error = self._operating_state.command(command)
+        if not success:
+            self.node.get_logger().warning(
+                f"{self.config.name} rejected GUI state command {command!r}: {error}"
+            )
+            return False
+        if self._operating_state.state in (CrtkOperatingState.DISABLED, CrtkOperatingState.FAULT):
+            self.model.move_jp(self.model.measured_js().position)
+        self._publish_operating_state(self.node.get_clock().now().to_msg())
+        return True
+
+    def command_joint_position(self, position: Iterable[float]) -> bool:
+        """Apply a GUI joint target while preserving operating-state semantics."""
+        if not self._motion_allowed("GUI joint command"):
+            return False
+        try:
+            self.model.move_jp(position)
+        except ValueError as error:
+            self.node.get_logger().warning(f"{self.config.name} rejected GUI joint command: {error}")
+            return False
+        return True
+
     def _state_command_callback(self, message) -> None:
         success, error = self._operating_state.command(message.string)
         if not success:

@@ -197,9 +197,9 @@ By default, the converter removes importer-authored Physics schemas because
 the project uses kinematic motion and does not need PhysX rigid bodies. Use
 --keep-physics only when experimenting with dynamic simulation.
 
-## Isaac Sim ROS 2 smoke test
+## Isaac Sim ROS 2 simulation
 
-The first Isaac Sim integration is a headless smoke test. It does not load USD robot assets yet; it validates ROS 2, custom messages, simulation time, and PSM/ECM topic connectivity.
+The launch file starts the configured multi-device kinematic scene, generates missing PSM/ECM conversion artifacts, and validates ROS 2, custom messages, simulation time, and PSM/ECM topic connectivity. The default profile starts PSM1, PSM2, PSM3, and a meshless ECM camera model.
 
 From the same shell where the ROS 2 workspace was sourced:
 
@@ -218,14 +218,16 @@ ros2 launch dvrk_isaac_sim run_sim.launch.py \
   headless:=true
 ```
 
-To include a generated visual asset, pass it explicitly. The ROS kinematic
-model and the USD visual reference are intentionally separate:
+Select the two-PSM or three-PSM scene and choose the ECM camera mode:
 
 ```bash
 ros2 launch dvrk_isaac_sim run_sim.launch.py \
-  headless:=true \
-  psm_usd:=/path/to/isaac_sim_ws/.generated/isaacsim-6.0/PSM1_420006/PSM1/PSM1.usda
+  scene_config:=/path/to/isaac_sim_ws/src/dvrk_isaac_sim/config/scenes/ECM_PSM1_PSM2.yaml \
+  camera:=mono
+ros2 launch dvrk_isaac_sim run_sim.launch.py camera:=stereo
 ```
+
+Mono publishes `/ECM/image_raw` and `/ECM/camera_info`; stereo publishes the corresponding `left` and `right` subtopics. Use `camera:=off` to disable rendering publication.
 
 Alternatively, select one arm and let the launch file generate its USD asset
 when the cache is missing:
@@ -256,7 +258,7 @@ Send a joint command from the second shell:
 
 ```bash
 ros2 topic pub --once /PSM1/move_jp sensor_msgs/msg/JointState \
-  "{name: [yaw, pitch, insertion, roll, wrist_pitch, wrist_yaw], position: [0.2, -0.1, 0.08, 0.0, 0.0, 0.0]}"
+  "{name: [yaw, pitch, insertion, roll, wrist_pitch, wrist_yaw], position: [0.2, -0.1, 0.12, 0.0, 0.0, 0.0]}"
 ```
 
 The corresponding `measured_js` and `measured_cp` values should move over subsequent simulation steps. The smoke test prints a successful `crtk_msgs/msg/OperatingState` import before entering the simulation loop.

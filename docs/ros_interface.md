@@ -85,7 +85,7 @@ The ECM publishes a rendered endoscope view through ROS 2 image transport:
 
 `/ECM/image_raw` is the raw-image base topic. `image_transport` may expose compressed or other transport variants without requiring changes to the simulator camera implementation. Topic names, encoding, and camera profile are configurable.
 
-The image and camera-info messages use the same simulation timestamp and the configured ECM optical frame ID.
+The image and camera-info messages use the same simulation timestamp and the configured ECM optical frame ID. Select `camera:=mono`, `camera:=stereo`, or `camera:=off` at launch. Stereo uses `/ECM/left/...` and `/ECM/right/...` topics.
 
 The current adapter also publishes state topics:
 
@@ -96,6 +96,12 @@ The current adapter also publishes state topics:
 /ECM/operating_state
 ```
 
+## GUI monitor and controls
+
+Non-headless Isaac Sim runs open a `dVRK CRTK Monitor` window. Each configured PSM or ECM has a panel showing its CRTK operating state, homed status, and measured joints. Revolute joints are displayed in degrees; insertion joints are displayed in millimetres.
+
+The joint fields are editable target values. `Apply joint targets` sends them through the same kinematic command path as `move_jp` and obeys the operating-state gate. The operating-state selector and `Home` button use the same state-machine path as the ROS `state_command` interface.
+
 ## 3. State semantics
 
 `measured_js` reports the current simulated joint positions and velocities, in the configured joint order. Effort is not physically simulated and should either be omitted or clearly reported as unavailable according to the selected message contract.
@@ -104,7 +110,7 @@ The current adapter also publishes state topics:
 
 `measured_cv` reports the corresponding spatial velocity computed from the joint state and Jacobian, not from noisy physics sensors.
 
-Simulated PSMs and ECM start in `ENABLED` with `is_homed=true` and the insertion joint initialized to `0.08 m`. Motion commands are accepted only in `ENABLED`; `DISABLED`, `PAUSED`, and `FAULT` hold the current joint position. The `operating_state.state` and `state.string` fields are kept synchronized.
+Simulated PSMs and ECM start in `ENABLED` with `is_homed=true` and the insertion joint initialized to `0.12 m`. Motion commands are accepted only in `ENABLED`; `DISABLED`, `PAUSED`, and `FAULT` hold the current joint position. The `operating_state.state` and `state.string` fields are kept synchronized.
 
 `state_command` uses `crtk_msgs/msg/StringStamped` and the command is carried in its `string` field. The state publishers use reliable, transient-local QoS, so a late subscriber receives the most recent state event. State is published at startup and after each accepted state command; it is not published on every simulation update.
 
@@ -129,7 +135,7 @@ clear_fault  -> DISABLED
 
 `servo_jp` is a continuously refreshed command. If no valid servo command is received within the configured timeout, the robot stops or holds according to configuration.
 
-Cartesian command topics are intentionally deferred until joint-space compatibility is validated.
+Cartesian commands are implemented through the configured FK/Jacobian and kinematic IK. PSM commands use position and orientation; ECM commands use the reachable position component.
 
 ## 5. Compatibility policy
 

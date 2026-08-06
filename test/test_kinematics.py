@@ -22,10 +22,10 @@ def test_psm_home_pose_and_jacobian():
 
 def test_psm_move_jp_respects_velocity_limit():
     robot = CrtkPSM(load_robot_config(ROOT / "config/PSM1.yaml"))
-    robot.move_jp([0.5, 0.2, 0.1, 0.1, 0.1, 0.1])
+    robot.move_jp([0.5, 0.2, 0.2, 0.1, 0.1, 0.1])
     robot.step(0.1)
-    np.testing.assert_allclose(robot.measured_js().position, [0.1, 0.1, 0.1, 0.04, 0.04, 0.04])
-    np.testing.assert_allclose(robot.measured_js().velocity, [1.0, 1.0, 0.2, 0.4, 0.4, 0.4])
+    np.testing.assert_allclose(robot.measured_js().position, [0.1, 0.1, 0.16, 0.04, 0.04, 0.04])
+    np.testing.assert_allclose(robot.measured_js().velocity, [1.0, 1.0, 0.4, 0.4, 0.4, 0.4])
 
 
 def test_ecm_has_four_joints():

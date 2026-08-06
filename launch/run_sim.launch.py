@@ -38,7 +38,8 @@ def _start_sim(context):
 
     asset = ""
     manifest = ""
-    conversion_command = None
+    conversion_commands = []
+    scene_config = Path(LaunchConfiguration("scene_config").perform(context)).expanduser().resolve()
     if arm:
         variant = (
             LaunchConfiguration("instrument").perform(context)
@@ -64,16 +65,52 @@ def _start_sim(context):
                 converter_command.extend(["--instrument", LaunchConfiguration("instrument").perform(context)])
             else:
                 converter_command.extend(["--endoscope", LaunchConfiguration("endoscope").perform(context)])
-            conversion_command = converter_command
+            conversion_commands.append(converter_command)
+    else:
+        if not scene_config.is_file():
+            raise RuntimeError(f"Scene configuration not found: {scene_config}")
+        with scene_config.open("r", encoding="utf-8") as stream:
+            scene_document = yaml.safe_load(stream) or {}
+        scene = scene_document.get("scene", scene_document)
+        scene_package_dir = scene_config.parent.parent.parent
+        for configured_robot in scene.get("robots", []):
+            robot_config = Path(configured_robot)
+            if not robot_config.is_absolute():
+                robot_config = scene_package_dir / robot_config
+            with robot_config.open("r", encoding="utf-8") as stream:
+                robot = (yaml.safe_load(stream) or {}).get("robot", {})
+            model = str(robot.get("name"))
+            variant = LaunchConfiguration("instrument").perform(context) if robot.get("type") == "psm" else LaunchConfiguration("endoscope").perform(context)
+            asset_name = f"{model}_{variant}"
+            asset_path = generated_dir / asset_name / model / f"{model}.usda"
+            manifest_path = generated_dir / asset_name / "kinematics.json"
+            if not asset_path.is_file() or not manifest_path.is_file():
+                converter = package_share / "scripts" / "convert_dvrk_model.py"
+                converter_command = [
+                    str(Path(isaac_dir) / "python.sh"), str(converter),
+                    "--model", model, "--output-dir", str(generated_dir),
+                    "--asset-name", asset_name, "--force",
+                ]
+                converter_command.extend(
+                    ["--instrument", variant] if robot.get("type") == "psm"
+                    else ["--endoscope", variant]
+                )
+                conversion_commands.append(converter_command)
 
     isaac_python = Path(isaac_dir) / "python.sh"
     script = package_share / "scripts" / "run_sim.py"
-    command = [str(isaac_python), str(script)]
+    command = [str(isaac_python), str(script),
+               "--renderer", LaunchConfiguration("renderer").perform(context)]
     if LaunchConfiguration("headless").perform(context).lower() in {"true", "1", "yes"}:
         command.append("--headless")
     duration = LaunchConfiguration("duration").perform(context)
     if duration and float(duration) > 0.0:
         command.extend(["--duration", duration])
+    if not arm:
+        command.extend(["--scene-config", str(scene_config), "--generated-dir", str(generated_dir),
+                        "--instrument", LaunchConfiguration("instrument").perform(context),
+                        "--endoscope", LaunchConfiguration("endoscope").perform(context)])
+    command.extend(["--camera", LaunchConfiguration("camera").perform(context)])
     if arm == "ECM":
         command.append("--no-psm")
         command.extend(["--ecm-usd", asset, "--ecm-kinematics", manifest])
@@ -93,18 +130,12 @@ def _start_sim(context):
         "RMW_IMPLEMENTATION": LaunchConfiguration("rmw_implementation").perform(context),
         "PYTHONUNBUFFERED": "1",
     }
-    if conversion_command is not None:
+    if conversion_commands:
         # Keep conversion and runtime startup in one sequential action. This
         # avoids launch event-handler races while Isaac Sim is shutting down.
-        shell_command = (
-            shlex.join(conversion_command)
-            + " && test -f "
-            + shlex.quote(asset)
-            + " && "
-            + shlex.join(command)
-        )
+        shell_command = " && ".join([shlex.join(item) for item in conversion_commands] + [shlex.join(command)])
         return [
-            LogInfo(msg=f"USD asset missing for {arm}; converting to {asset}"),
+            LogInfo(msg=f"Generated asset or kinematics manifest missing; converting {len(conversion_commands)} robot asset(s)"),
             ExecuteProcess(cmd=["bash", "-c", shell_command], cwd=str(isaac_dir), additional_env=environment, output="screen"),
         ]
     return [
@@ -124,9 +155,12 @@ def generate_launch_description():
         DeclareLaunchArgument("headless", default_value="false"),
         DeclareLaunchArgument("duration", default_value="0.0"),
         DeclareLaunchArgument("arm", default_value=""),
+        DeclareLaunchArgument("scene_config", default_value=str(package_share / "config" / "scenes" / "ECM_PSM1_PSM2_PSM3.yaml")),
         DeclareLaunchArgument("generated_dir", default_value=default_generated_dir),
         DeclareLaunchArgument("instrument", default_value="420006"),
         DeclareLaunchArgument("endoscope", default_value="Si_straight"),
+        DeclareLaunchArgument("camera", default_value="mono"),
+        DeclareLaunchArgument("renderer", default_value="MinimalRendering"),
         DeclareLaunchArgument("psm_usd", default_value=""),
         DeclareLaunchArgument("ecm_usd", default_value=""),
         DeclareLaunchArgument("ros_distro", default_value="jazzy"),

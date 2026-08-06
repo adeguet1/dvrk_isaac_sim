@@ -27,6 +27,7 @@ Full patient-cart CAD, dynamics, contact simulation, and hardware-runtime depend
 - [ECM configuration](config/ECM.yaml)
 - [Two-PSM scene](config/scenes/ECM_PSM1_PSM2.yaml)
 - [Three-PSM scene](config/scenes/ECM_PSM1_PSM2_PSM3.yaml)
+- [Cart frame generator](scripts/generate_cart_frames.py)
 
 ## dVRK resources
 
@@ -53,7 +54,25 @@ export ISAAC_SIM_DIR=/path/to/isaac-sim
 
 source /opt/ros/jazzy/setup.bash
 source /path/to/isaac_sim_ws/install/setup.bash
-ros2 launch dvrk_isaac_sim run_sim.launch.py
+ros2 launch dvrk_isaac_sim run_sim.launch.py camera:=mono renderer:=MinimalRendering
+```
+
+Start the full virtual cart with the default three PSMs and kinematic ECM, or select the two-PSM profile:
+
+```bash
+ros2 launch dvrk_isaac_sim run_sim.launch.py camera:=stereo
+ros2 launch dvrk_isaac_sim run_sim.launch.py scene_config:=.../config/scenes/ECM_PSM1_PSM2.yaml camera:=mono
+```
+
+The default renderer is `MinimalRendering`, matching the Isaac Sim RTX Minimal viewport mode. In GUI mode, the `dVRK CRTK Monitor` window lists every configured arm, shows live state and measured joints in degrees/mm, and provides joint-target and operating-state controls. Use `renderer:=RaytracedLighting` if higher-fidelity rendering is desired. The simulator adds neutral lighting and a gray environment so dark instruments remain visible.
+
+The ECM has no mesh in the full-cart scene. Its kinematic optical frame drives the Isaac camera. Mono publishes `/ECM/image_raw` and `/ECM/camera_info`; stereo publishes `/ECM/left/...` and `/ECM/right/...`.
+```
+
+To regenerate the default cart frame snippet after changing the constants, run:
+
+```bash
+./scripts/generate_cart_frames.py
 ```
 
 The initial ROS 2 adapter can be run for one configured component:
