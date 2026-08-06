@@ -33,9 +33,10 @@ class RobotConfig:
     joints: tuple[JointConfig, ...]
     home_position: np.ndarray
     raw: dict[str, Any]
+    kinematics_manifest: Path | None = None
 
 
-def load_robot_config(path: str | Path) -> RobotConfig:
+def load_robot_config(path: str | Path, kinematics_manifest: str | Path | None = None) -> RobotConfig:
     """Load and validate one robot YAML configuration."""
 
     source = Path(path)
@@ -99,4 +100,6 @@ def load_robot_config(path: str | Path) -> RobotConfig:
         joints=tuple(joints),
         home_position=home,
         raw=document,
+        kinematics_manifest=(Path(kinematics_manifest).expanduser().resolve()
+                             if kinematics_manifest is not None else None),
     )

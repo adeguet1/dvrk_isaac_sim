@@ -170,6 +170,33 @@ ros2 run dvrk_isaac_sim dvrk_isaac_sim_ros \
 
 The Isaac Sim smoke test below uses the same sourced environment to launch the simulator and its in-process CRTK ROS adapter.
 
+## USD asset conversion
+
+The repository does not commit generated USD files. The source of truth remains
+the virtual Xacro/URDF and meshes from dvrk_model; conversion is an explicit,
+repeatable build step and generated assets are cached under .generated/.
+
+Source the ROS 2 workspace first so Xacro can resolve dvrk_model, then invoke
+the converter with Isaac Sim's Python:
+
+    source /opt/ros/jazzy/setup.bash
+    source /path/to/isaac_sim_ws/install/setup.bash
+    export DVRK_MODEL_PATH=/path/to/dvrk_model  # optional when the package is sourced
+
+    ${ISAAC_SIM_DIR}/python.sh \
+      /path/to/isaac_sim_ws/install/dvrk_isaac_sim/share/dvrk_isaac_sim/scripts/convert_dvrk_model.py \
+      --model PSM1 --instrument 420006
+
+Use --model PSM2, --model PSM3, or --model ECM for the other virtual
+components. The output directory can be overridden with --output-dir; the
+default is .generated/isaacsim-6.0. This keeps conversion separate from the
+runtime ROS interface and makes it possible to review or regenerate assets
+without committing generated files.
+
+By default, the converter removes importer-authored Physics schemas because
+the project uses kinematic motion and does not need PhysX rigid bodies. Use
+--keep-physics only when experimenting with dynamic simulation.
+
 ## Isaac Sim ROS 2 smoke test
 
 The first Isaac Sim integration is a headless smoke test. It does not load USD robot assets yet; it validates ROS 2, custom messages, simulation time, and PSM/ECM topic connectivity.
@@ -191,6 +218,29 @@ ros2 launch dvrk_isaac_sim run_sim.launch.py \
   headless:=true
 ```
 
+To include a generated visual asset, pass it explicitly. The ROS kinematic
+model and the USD visual reference are intentionally separate:
+
+```bash
+ros2 launch dvrk_isaac_sim run_sim.launch.py \
+  headless:=true \
+  psm_usd:=/path/to/isaac_sim_ws/.generated/isaacsim-6.0/PSM1_420006/PSM1/PSM1.usda
+```
+
+Alternatively, select one arm and let the launch file generate its USD asset
+when the cache is missing:
+
+```bash
+ros2 launch dvrk_isaac_sim run_sim.launch.py \
+  arm:=PSM1 \
+  generated_dir:=/path/to/isaac_sim_ws/.generated/isaacsim-6.0
+```
+
+Use `arm:=ECM`, `arm:=PSM2`, or `arm:=PSM3` as appropriate. The selected arm
+is the only kinematic component started by this mode. `instrument:=420006` and
+`endoscope:=Si_straight` customize conversion defaults. Variant-specific
+assets are cached as `PSM1_420006` or `ECM_Si_straight`.
+
 In a second shell, source the same environments and inspect the topics:
 
 ```bash
@@ -206,7 +256,7 @@ Send a joint command from the second shell:
 
 ```bash
 ros2 topic pub --once /PSM1/move_jp sensor_msgs/msg/JointState \
-  "{name: [yaw, pitch, insertion], position: [0.2, -0.1, 0.08]}"
+  "{name: [yaw, pitch, insertion, roll, wrist_pitch, wrist_yaw], position: [0.2, -0.1, 0.08, 0.0, 0.0, 0.0]}"
 ```
 
 The corresponding `measured_js` and `measured_cp` values should move over subsequent simulation steps. The smoke test prints a successful `crtk_msgs/msg/OperatingState` import before entering the simulation loop.

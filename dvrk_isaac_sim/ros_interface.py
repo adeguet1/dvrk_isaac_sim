@@ -62,12 +62,61 @@ def _pose_from_ros(message) -> Pose:
     )
 
 
+class CrtkOperatingState:
+    """Small, deterministic state machine for the CRTK operating-state API."""
+
+    DISABLED = "DISABLED"
+    ENABLED = "ENABLED"
+    PAUSED = "PAUSED"
+    FAULT = "FAULT"
+
+    def __init__(self, initial_state: str = DISABLED) -> None:
+        self.state = initial_state
+        self.is_homed = True
+
+    @property
+    def accepts_motion(self) -> bool:
+        return self.state == self.ENABLED
+
+    def command(self, command: str) -> tuple[bool, str]:
+        """Apply a CRTK ``state_command`` and return success and an error."""
+        command = str(command).strip().lower()
+        if command == "enable":
+            if self.state == self.FAULT:
+                return False, "cannot enable while in FAULT; issue clear_fault first"
+            self.state = self.ENABLED
+        elif command == "disable":
+            self.state = self.DISABLED
+        elif command == "pause":
+            if self.state != self.ENABLED:
+                return False, f"cannot pause from {self.state}"
+            self.state = self.PAUSED
+        elif command == "resume":
+            if self.state != self.PAUSED:
+                return False, f"cannot resume from {self.state}"
+            self.state = self.ENABLED
+        elif command == "home":
+            self.is_homed = True
+        elif command == "unhome":
+            self.is_homed = False
+        elif command == "fault":
+            self.state = self.FAULT
+        elif command in ("clear_fault", "reset"):
+            if self.state != self.FAULT:
+                return False, f"cannot clear fault from {self.state}"
+            self.state = self.DISABLED
+        else:
+            return False, f"unknown state command {command!r}"
+        return True, ""
+
+
 class CrtkRosComponent:
     """ROS 2 adapter exposing CRTK topics for one kinematic component."""
 
     def __init__(self, node, config: RobotConfig, model: CrtkComponent):
-        from crtk_msgs.msg import CartesianServo, OperatingState, StringStamped
+        from crtk_msgs.msg import OperatingState, StringStamped
         from geometry_msgs.msg import PoseStamped, TwistStamped
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from sensor_msgs.msg import JointState
 
         self.node = node
@@ -78,19 +127,72 @@ class CrtkRosComponent:
         self._TwistStamped = TwistStamped
         self._OperatingState = OperatingState
         self._StringStamped = StringStamped
+        initial_state = CrtkOperatingState.ENABLED
+        self._operating_state = CrtkOperatingState(initial_state)
+        self._has_jaw = config.type == "psm"
+        self._jaw_position = 0.0
+        self._jaw_velocity = 0.0
         self._frame_id = str(config.raw.get("robot", {}).get("cartesian", {}).get("reference_frame", config.parent_frame))
+        state_qos = QoSProfile(depth=1)
+        state_qos.reliability = ReliabilityPolicy.RELIABLE
+        state_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
 
         self.measured_js_publisher = node.create_publisher(JointState, "measured_js", 10)
         self.measured_cp_publisher = node.create_publisher(PoseStamped, "measured_cp", 10)
+        self.setpoint_cp_publisher = node.create_publisher(PoseStamped, "setpoint_cp", 10)
         self.measured_cv_publisher = node.create_publisher(TwistStamped, "measured_cv", 10)
+        if self._has_jaw:
+            self.jaw_measured_js_publisher = node.create_publisher(JointState, "jaw/measured_js", 10)
+            self.jaw_setpoint_js_publisher = node.create_publisher(JointState, "jaw/setpoint_js", 10)
         self.setpoint_js_publisher = node.create_publisher(JointState, "setpoint_js", 10)
-        self.operating_state_publisher = node.create_publisher(OperatingState, "operating_state", 10)
-        self.state_publisher = node.create_publisher(StringStamped, "state", 10)
+        self.operating_state_publisher = node.create_publisher(OperatingState, "operating_state", state_qos)
+        self.state_publisher = node.create_publisher(StringStamped, "state", state_qos)
 
         node.create_subscription(JointState, "move_jp", self._move_jp_callback, 10)
         node.create_subscription(JointState, "servo_jp", self._servo_jp_callback, 10)
         node.create_subscription(PoseStamped, "move_cp", self._move_cp_callback, 10)
-        node.create_subscription(CartesianServo, "servo_cp", self._servo_cp_callback, 10)
+        node.create_subscription(PoseStamped, "servo_cp", self._servo_cp_callback, 10)
+        if self._has_jaw:
+            self._jaw_servo_subscription = node.create_subscription(
+                JointState, "jaw/servo_jp", self._jaw_servo_jp_callback, 10
+            )
+        self._state_command_subscription = node.create_subscription(
+            StringStamped, "state_command", self._state_command_callback, 10
+        )
+        self._publish_operating_state(node.get_clock().now().to_msg())
+
+    def _state_command_callback(self, message) -> None:
+        success, error = self._operating_state.command(message.string)
+        if not success:
+            self.node.get_logger().warning(
+                f"{self.config.name} rejected state_command {message.string!r}: {error}"
+            )
+            return
+        if self._operating_state.state in (CrtkOperatingState.DISABLED, CrtkOperatingState.FAULT):
+            self.model.move_jp(self.model.measured_js().position)
+        self._publish_operating_state(self.node.get_clock().now().to_msg())
+        self.node.get_logger().info(
+            f"{self.config.name} state is now {self._operating_state.state}"
+        )
+
+    def _jaw_servo_jp_callback(self, message) -> None:
+        if not self._motion_allowed("jaw/servo_jp"):
+            return
+        if not message.position:
+            self.node.get_logger().warning(f"{self.config.name} rejected jaw/servo_jp: no position")
+            return
+        # The virtual instrument has no jaw dynamics. Keep a single logical jaw
+        # position and report it immediately as both measured and setpoint state.
+        self._jaw_position = float(message.position[0])
+        self._jaw_velocity = 0.0
+
+    def _motion_allowed(self, command: str) -> bool:
+        if self._operating_state.accepts_motion:
+            return True
+        self.node.get_logger().debug(
+            f"{self.config.name} ignored {command}: state is {self._operating_state.state}"
+        )
+        return False
 
     def _positions_from_message(self, message) -> np.ndarray:
         if not message.position:
@@ -107,18 +209,24 @@ class CrtkRosComponent:
         return values
 
     def _move_jp_callback(self, message) -> None:
+        if not self._motion_allowed("move_jp"):
+            return
         try:
             self.model.move_jp(self._positions_from_message(message))
         except ValueError as error:
             self.node.get_logger().warning(f"{self.config.name} rejected move_jp: {error}")
 
     def _servo_jp_callback(self, message) -> None:
+        if not self._motion_allowed("servo_jp"):
+            return
         try:
             self.model.servo_jp(self._positions_from_message(message))
         except ValueError as error:
             self.node.get_logger().warning(f"{self.config.name} rejected servo_jp: {error}")
 
     def _move_cp_callback(self, message) -> None:
+        if not self._motion_allowed("move_cp"):
+            return
         try:
             result = self.model.move_cp(_pose_from_ros(message))
             if not result.success:
@@ -127,12 +235,42 @@ class CrtkRosComponent:
             self.node.get_logger().warning(f"{self.config.name} rejected move_cp: {error}")
 
     def _servo_cp_callback(self, message) -> None:
+        if not self._motion_allowed("servo_cp"):
+            return
         try:
             result = self.model.move_cp(_pose_from_ros(message))
             if not result.success:
                 self.node.get_logger().warning(f"{self.config.name} servo_cp failed: {result.message}")
         except ValueError as error:
             self.node.get_logger().warning(f"{self.config.name} rejected servo_cp: {error}")
+
+    def _publish_jaw_state(self, stamp) -> None:
+        if not self._has_jaw:
+            return
+        for publisher in (self.jaw_measured_js_publisher, self.jaw_setpoint_js_publisher):
+            jaw = self._JointState()
+            jaw.header.stamp = stamp
+            jaw.header.frame_id = self._frame_id
+            jaw.name = ["jaw"]
+            jaw.position = [self._jaw_position]
+            jaw.velocity = [self._jaw_velocity]
+            publisher.publish(jaw)
+
+    def _publish_operating_state(self, stamp) -> None:
+        """Publish the state event once, with transient-local durability."""
+        operating_state = self._OperatingState()
+        operating_state.header.stamp = stamp
+        operating_state.header.frame_id = self._frame_id
+        operating_state.state = self._operating_state.state
+        operating_state.is_homed = self._operating_state.is_homed
+        operating_state.is_busy = self._operating_state.accepts_motion and self.model.is_busy()
+        self.operating_state_publisher.publish(operating_state)
+
+        state = self._StringStamped()
+        state.header.stamp = stamp
+        state.header.frame_id = self._frame_id
+        state.string = self._operating_state.state
+        self.state_publisher.publish(state)
 
     def publish(self, stamp) -> None:
         joint_state = self.model.measured_js()
@@ -153,6 +291,9 @@ class CrtkRosComponent:
         measured_cp.pose.position.x, measured_cp.pose.position.y, measured_cp.pose.position.z = pose.position
         measured_cp.pose.orientation.x, measured_cp.pose.orientation.y, measured_cp.pose.orientation.z, measured_cp.pose.orientation.w = _quaternion_xyzw(pose.orientation)
         self.measured_cp_publisher.publish(measured_cp)
+        # CRTK teleoperation commonly consumes setpoint_cp from the puppet.
+        # This simulator has no separate controller, so it is identical to measured_cp.
+        self.setpoint_cp_publisher.publish(measured_cp)
 
         measured_cv = self._TwistStamped()
         measured_cv.header.stamp = stamp
@@ -161,26 +302,13 @@ class CrtkRosComponent:
         measured_cv.twist.angular.x, measured_cv.twist.angular.y, measured_cv.twist.angular.z = twist.angular
         self.measured_cv_publisher.publish(measured_cv)
 
-        operating_state = self._OperatingState()
-        operating_state.header.stamp = stamp
-        operating_state.header.frame_id = self._frame_id
-        operating_state.state = "ENABLED"
-        operating_state.is_homed = True
-        operating_state.is_busy = self.model.is_busy()
-        self.operating_state_publisher.publish(operating_state)
-
-        state = self._StringStamped()
-        state.header.stamp = stamp
-        state.header.frame_id = self._frame_id
-        state.string = "ENABLED"
-        self.state_publisher.publish(state)
-
         setpoint = self._JointState()
         setpoint.header.stamp = stamp
         setpoint.header.frame_id = self._frame_id
         setpoint.name = list(joint_state.names)
         setpoint.position = self.model.goal_js().position.tolist()
         self.setpoint_js_publisher.publish(setpoint)
+        self._publish_jaw_state(stamp)
 
 
 class CrtkRosNode:

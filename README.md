@@ -8,7 +8,7 @@ The project focuses on software integration and kinematic simulation rather than
 
 - ROS 2 only.
 - Isaac Sim 6.0.
-- Kinematic PSM control with `yaw`, `pitch`, and `insertion`.
+- Kinematic PSM control with `yaw`, `pitch`, `insertion`, `roll`, `wrist_pitch`, and `wrist_yaw`; jaw control is provided as a separate logical one-joint interface.
 - Kinematic ECM control with `yaw`, `pitch`, `insertion`, and `roll`.
 - Startup profiles for two or three PSMs plus an ECM.
 - Reuse of visual assets from [`dvrk_model`](https://github.com/jhu-dvrk/dvrk_model).
@@ -63,3 +63,9 @@ ros2 run dvrk_isaac_sim dvrk_isaac_sim_ros \
   --ros-args -r __ns:=/PSM1 \
   -p robot_config:=/path/to/config/PSM1.yaml
 ```
+
+## Tested teleoperation
+
+The ROS 2 interface has been tested with the dVRK system configuration using an old Logitech 3Dconnexion SpaceBall 5000 as the MTMR input and the simulated `/PSM1` as the puppet. The corresponding dVRK configuration is `system-MTMR-3Dconnexion-PSM1_from_ROS.json` in `saw3Dconnexion/share`.
+
+Start Isaac Sim first, source the Isaac Sim ROS 2 workspace, and launch the PSM/ECM simulation. Then start the dVRK system with the SpaceBall configuration. The PSM should report `ENABLED` and `is_homed=true`; MTMR motion should teleoperate the simulated PSM Cartesian pose and jaw.

@@ -61,18 +61,18 @@ Each PSM publishes under its own namespace. Base-frame configuration is currentl
 The initial payloads follow CRTK 1.0:
 
 ```text
-measured_js   sensor_msgs/JointState
+measured_js   sensor_msgs/JointState (PSM order: yaw, pitch, insertion, roll, wrist_pitch, wrist_yaw)
 measured_cp   geometry_msgs/PoseStamped
 measured_cv   geometry_msgs/TwistStamped
 move_jp       sensor_msgs/JointState
 servo_jp      sensor_msgs/JointState
 move_cp       geometry_msgs/PoseStamped
-servo_cp      crtk_msgs/CartesianServo
+servo_cp      geometry_msgs/PoseStamped
 operating_state crtk_msgs/OperatingState
 state         crtk_msgs/StringStamped
 ```
 
-The current adapter publishes `measured_js`, `measured_cp`, `measured_cv`, `setpoint_js`, `operating_state`, and `state`, and subscribes to `move_jp`, `servo_jp`, `move_cp`, and `servo_cp`. Cartesian commands currently use position-only IK; orientation-aware control will be added when the controlled PSM/ECM DOFs support it.
+The current adapter publishes `measured_js`, `measured_cp`, `measured_cv`, `setpoint_js`, `operating_state`, and `state`, and subscribes to `move_jp`, `servo_jp`, `move_cp`, and `servo_cp`. Six-DOF PSM Cartesian commands use position-and-orientation IK. ECM Cartesian commands remain position-only because its four joints cannot generally satisfy a full six-axis pose. Both `move_cp` and `servo_cp` use `geometry_msgs/PoseStamped`, matching the dVRK ROS bridge and CRTK Python client.
 
 ### Endoscope view
 
@@ -103,6 +103,25 @@ The current adapter also publishes state topics:
 `measured_cp` reports the active tool pose using the configured Cartesian reference frame.
 
 `measured_cv` reports the corresponding spatial velocity computed from the joint state and Jacobian, not from noisy physics sensors.
+
+Simulated PSMs and ECM start in `ENABLED` with `is_homed=true` and the insertion joint initialized to `0.08 m`. Motion commands are accepted only in `ENABLED`; `DISABLED`, `PAUSED`, and `FAULT` hold the current joint position. The `operating_state.state` and `state.string` fields are kept synchronized.
+
+`state_command` uses `crtk_msgs/msg/StringStamped` and the command is carried in its `string` field. The state publishers use reliable, transient-local QoS, so a late subscriber receives the most recent state event. State is published at startup and after each accepted state command; it is not published on every simulation update.
+
+The supported commands are:
+
+```text
+enable       -> ENABLED
+disable      -> DISABLED
+pause        -> PAUSED
+resume       -> ENABLED
+home         -> is_homed=true
+unhome       -> is_homed=false
+fault        -> FAULT
+clear_fault  -> DISABLED
+```
+
+`home` and `unhome` are logical operations in this kinematic simulator; no physical homing motion is performed. Invalid commands are rejected and leave the state unchanged.
 
 ## 4. Command semantics
 

@@ -8,7 +8,7 @@ The initial simulator is kinematic. It does not depend on dVRK Classic, dVRK Si,
 
 The first supported devices are:
 
-- PSM: yaw, pitch, and insertion control with a selectable dVRK instrument visual.
+- PSM: yaw, pitch, insertion, roll, wrist pitch, and wrist yaw control with a selectable dVRK instrument visual; jaw remains a separate logical joint.
 - ECM: yaw, pitch, insertion, and roll control with a minimal endoscope visual and rendered endoscope view.
 
 The simulator can start with either two or three PSM instances. PSM instances are independently configured and use namespaces `/PSM1`, `/PSM2`, and `/PSM3`.
@@ -91,10 +91,10 @@ The ECM camera/rendering component owns the rendered view. Its camera pose is de
 ### PSM
 
 ```text
-[yaw, pitch, insertion]
+[yaw, pitch, insertion, roll, wrist_pitch, wrist_yaw]
 ```
 
-The existing virtual PSM model provides three geometry-free joints at the RCM and attaches the instrument to `PSM1_adaptor_link` or its equivalent for another prefix. Instrument roll, wrist pitch, wrist yaw, and jaw are visual-only in the first release.
+The virtual PSM model provides three geometry-free joints at the RCM and attaches the instrument to `PSM1_adaptor_link` or its equivalent for another prefix. Instrument roll, wrist pitch, and wrist yaw are now kinematic DOFs. Jaw remains a separate logical ROS interface because it is not part of the arm Cartesian joint vector.
 
 The joint names and limits must remain configurable even though the default names match the dVRK model.
 

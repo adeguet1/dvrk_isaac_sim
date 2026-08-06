@@ -33,7 +33,7 @@ robot:
       upper: 4.53786
       velocity: 1.0
 
-  home_position: [0.0, 0.0, 0.0, 0.0]
+  home_position: [0.0, 0.0, 0.08, 0.0]
 
   asset:
     endoscope: Si_straight

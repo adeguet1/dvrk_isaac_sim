@@ -9,6 +9,7 @@ from typing import Iterable
 import numpy as np
 
 from .config import RobotConfig
+from .urdf_kinematics import UrdfKinematicChain
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,14 @@ class CrtkComponent:
         self._adaptor_offset = float(adaptor_offset)
         self._adaptor_rpy = adaptor_rpy
         self._joint_origins = self._make_joint_origins()
+        self._urdf_chain = (UrdfKinematicChain(config.kinematics_manifest)
+                            if config.kinematics_manifest is not None
+                            and config.kinematics_manifest.is_file() else None)
+        if self._urdf_chain is not None and self._urdf_chain.active_joints != tuple(joint.name for joint in config.joints):
+            raise ValueError(
+                f"URDF manifest joints {self._urdf_chain.active_joints} do not match "
+                f"configured joints {tuple(joint.name for joint in config.joints)}"
+            )
 
     def _make_joint_origins(self) -> tuple[tuple[np.ndarray, tuple[float, float, float]], ...]:
         origins = [(np.zeros(3), (0.0, 0.0, 0.0)) for _ in self.config.joints]
@@ -101,6 +110,16 @@ class CrtkComponent:
     def _forward_with_jacobian(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         if q.shape != (len(self.config.joints),):
             raise ValueError("joint position has the wrong size")
+        if self._urdf_chain is not None:
+            transform, jacobian = self._urdf_chain.forward(
+                q, tuple(joint.name for joint in self.config.joints)
+            )
+            base_rotation = _quaternion_matrix_xyzw(self.config.base_orientation_xyzw)
+            base_transform = _transform(base_rotation, self.config.base_position)
+            transform = base_transform @ transform
+            jacobian[:3, :] = base_rotation @ jacobian[:3, :]
+            jacobian[3:, :] = base_rotation @ jacobian[3:, :]
+            return transform, jacobian
         transform = _transform(_quaternion_matrix_xyzw(self.config.base_orientation_xyzw), self.config.base_position)
         axes_world = []
         origins_world = []
@@ -180,18 +199,43 @@ class CrtkComponent:
         return jacobian
 
     def compute_ik(self, target: Pose, seed: Iterable[float] | None = None, max_iterations: int = 100) -> IKResult:
+        """Solve Cartesian IK, including orientation when the chain has six DOFs."""
         q = self._q.copy() if seed is None else self._validate_joint_position(seed)
+        use_orientation = len(self.config.joints) >= 6
         tolerance = 1e-5
         for iteration in range(max_iterations):
             pose = self.compute_fk(q)
-            error = target.position - pose.position
-            if np.linalg.norm(error) < tolerance:
-                return IKResult(q, True, iteration, float(np.linalg.norm(error)), "position converged")
-            jacobian = self.compute_jacobian(q)[:3, :]
-            step = jacobian.T @ np.linalg.solve(jacobian @ jacobian.T + 1e-6 * np.eye(3), error)
+            position_error = target.position - pose.position
+            if use_orientation:
+                # First-order world-frame rotation error. This is compatible
+                # with the angular part of the spatial Jacobian.
+                orientation_error = 0.5 * (
+                    np.cross(pose.orientation[:, 0], target.orientation[:, 0])
+                    + np.cross(pose.orientation[:, 1], target.orientation[:, 1])
+                    + np.cross(pose.orientation[:, 2], target.orientation[:, 2])
+                )
+                error = np.concatenate((position_error, orientation_error))
+                jacobian = self.compute_jacobian(q)
+            else:
+                error = position_error
+                jacobian = self.compute_jacobian(q)[:3, :]
+            error_norm = float(np.linalg.norm(error))
+            if error_norm < tolerance:
+                return IKResult(q, True, iteration, error_norm, "pose converged" if use_orientation else "position converged")
+            step = jacobian.T @ np.linalg.solve(jacobian @ jacobian.T + 1e-6 * np.eye(jacobian.shape[0]), error)
             q = self._clip_joint_position(q + 0.5 * step)
-        error_norm = float(np.linalg.norm(target.position - self.compute_fk(q).position))
-        return IKResult(q, error_norm < tolerance, max_iterations, error_norm, "position IK did not converge")
+        pose = self.compute_fk(q)
+        position_error = target.position - pose.position
+        if use_orientation:
+            orientation_error = 0.5 * (
+                np.cross(pose.orientation[:, 0], target.orientation[:, 0])
+                + np.cross(pose.orientation[:, 1], target.orientation[:, 1])
+                + np.cross(pose.orientation[:, 2], target.orientation[:, 2])
+            )
+            error_norm = float(np.linalg.norm(np.concatenate((position_error, orientation_error))))
+        else:
+            error_norm = float(np.linalg.norm(position_error))
+        return IKResult(q, error_norm < tolerance, max_iterations, error_norm, "pose IK did not converge" if use_orientation else "position IK did not converge")
 
     def move_cp(self, target: Pose) -> IKResult:
         result = self.compute_ik(target)
@@ -216,15 +260,33 @@ class CrtkComponent:
 
 
 class CrtkPSM(CrtkComponent):
-    """Three-DOF virtual PSM: yaw, pitch, and insertion."""
+    """Six-DOF virtual PSM: RCM plus roll, wrist pitch, and wrist yaw."""
 
     def __init__(self, config: RobotConfig):
-        if config.type != "psm" or len(config.joints) != 3:
-            raise ValueError("CrtkPSM requires a three-joint PSM configuration")
+        if config.type != "psm" or len(config.joints) != 6:
+            raise ValueError("CrtkPSM requires six configured joints")
         super().__init__(config, adaptor_offset=0.4826, adaptor_rpy=(math.pi, 0.0, -math.pi / 2.0))
 
+    def _make_joint_origins(self) -> tuple[tuple[np.ndarray, tuple[float, float, float]], ...]:
+        origins = list(super()._make_joint_origins())
+        # Approximate the 420006 instrument chain. The converter/visual keeps
+        # the instrument-specific mesh, while this provides a useful generic
+        # wrist length for Cartesian FK and measured_cp.
+        if len(origins) >= 6:
+            origins[3] = (np.array([0.0, 0.0, 0.4670]), (0.0, 0.0, 0.0))
+            origins[4] = (np.zeros(3), (-math.pi / 2.0, -math.pi / 2.0, 0.0))
+            origins[5] = (np.array([0.0107, 0.0, 0.0]), (-math.pi / 2.0, -math.pi / 2.0, 0.0))
+        return tuple(origins)
+
     def _joint_axes(self) -> tuple[np.ndarray, ...]:
-        return (np.array([0.0, -1.0, 0.0]), np.array([-1.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0]))
+        return (
+            np.array([0.0, -1.0, 0.0]),
+            np.array([-1.0, 0.0, 0.0]),
+            np.array([0.0, 0.0, 1.0]),
+            np.array([0.0, 0.0, 1.0]),
+            np.array([0.0, 0.0, 1.0]),
+            np.array([0.0, 0.0, 1.0]),
+        )
 
 
 class CrtkECM(CrtkComponent):

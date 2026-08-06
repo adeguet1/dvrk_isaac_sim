@@ -30,6 +30,7 @@ setup(
         ]),
         (f"share/{package_name}/launch", ["launch/run_sim.launch.py"]),
         (f"share/{package_name}/scripts", ["scripts/run_sim.py"]),
+        (f"share/{package_name}/scripts", ["scripts/convert_dvrk_model.py"]),
     ],
     install_requires=["setuptools", "numpy", "PyYAML"],
     zip_safe=True,
