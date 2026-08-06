@@ -1,8 +1,0 @@
-scene:
-  name: psm2_ecm
-  base_frame_provider: yaml
-  robots:
-    - config/psm1.yaml
-    - config/psm2.yaml
-    - config/ecm.yaml
-

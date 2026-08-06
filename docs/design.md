@@ -159,8 +159,8 @@ The ECM camera is configured at runtime rather than embedded in the endoscope as
 Scene profiles select the devices launched in a simulation. The initial profiles are:
 
 ```text
-config/scenes/psm2_ecm.yaml
-config/scenes/psm3_ecm.yaml
+config/scenes/ECM_PSM1_PSM2.yaml
+config/scenes/ECM_PSM1_PSM2_PSM3.yaml
 ```
 
 Each profile lists the PSM and ECM configuration files and their base-frame definitions. Every device has:

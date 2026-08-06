@@ -4,6 +4,14 @@ This document defines the initial interface surface. Exact message types and fie
 
 The same names are used by the internal Python interfaces. The ROS adapter is a transport layer, not a naming translation layer.
 
+The first ROS 2 adapter is a Python node installed as `dvrk_isaac_sim_ros`. It accepts one `robot_config` parameter and is intended to be namespace-remapped per device:
+
+```bash
+ros2 run dvrk_isaac_sim dvrk_isaac_sim_ros \
+  --ros-args -r __ns:=/PSM1 \
+  -p robot_config:=/path/to/config/PSM1.yaml
+```
+
 ## 1. Namespaces
 
 The default namespaces are:
@@ -34,6 +42,8 @@ Each PSM publishes under its own namespace. Base-frame configuration is currentl
 /PSM1/measured_cv
 /PSM1/move_jp
 /PSM1/servo_jp
+/PSM1/move_cp
+/PSM1/servo_cp
 ```
 
 ### ECM
@@ -44,7 +54,25 @@ Each PSM publishes under its own namespace. Base-frame configuration is currentl
 /ECM/measured_cv
 /ECM/move_jp
 /ECM/servo_jp
+/ECM/move_cp
+/ECM/servo_cp
 ```
+
+The initial payloads follow CRTK 1.0:
+
+```text
+measured_js   sensor_msgs/JointState
+measured_cp   geometry_msgs/PoseStamped
+measured_cv   geometry_msgs/TwistStamped
+move_jp       sensor_msgs/JointState
+servo_jp      sensor_msgs/JointState
+move_cp       geometry_msgs/PoseStamped
+servo_cp      crtk_msgs/CartesianServo
+operating_state crtk_msgs/OperatingState
+state         crtk_msgs/StringStamped
+```
+
+The current adapter publishes `measured_js`, `measured_cp`, `measured_cv`, `setpoint_js`, `operating_state`, and `state`, and subscribes to `move_jp`, `servo_jp`, `move_cp`, and `servo_cp`. Cartesian commands currently use position-only IK; orientation-aware control will be added when the controlled PSM/ECM DOFs support it.
 
 ### Endoscope view
 
@@ -59,7 +87,7 @@ The ECM publishes a rendered endoscope view through ROS 2 image transport:
 
 The image and camera-info messages use the same simulation timestamp and the configured ECM optical frame ID.
 
-The initial release should add state topics after the motion topics are validated:
+The current adapter also publishes state topics:
 
 ```text
 /PSM1/state

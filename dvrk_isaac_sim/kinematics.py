@@ -1,0 +1,249 @@
+"""Pure-Python CRTK-style kinematics for the virtual PSM and ECM."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import math
+from typing import Iterable
+
+import numpy as np
+
+from .config import RobotConfig
+
+
+@dataclass(frozen=True)
+class Pose:
+    position: np.ndarray
+    orientation: np.ndarray
+
+
+@dataclass(frozen=True)
+class Twist:
+    linear: np.ndarray
+    angular: np.ndarray
+
+
+@dataclass(frozen=True)
+class JointState:
+    names: tuple[str, ...]
+    position: np.ndarray
+    velocity: np.ndarray
+
+
+@dataclass(frozen=True)
+class IKResult:
+    position: np.ndarray
+    success: bool
+    iterations: int
+    position_error: float
+    message: str = ""
+
+
+def _rpy_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    return np.array([
+        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+        [-sp, cp * sr, cp * cr],
+    ])
+
+
+def _quaternion_matrix_xyzw(quaternion: np.ndarray) -> np.ndarray:
+    x, y, z, w = quaternion / np.linalg.norm(quaternion)
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
+
+
+def _rotation(axis: np.ndarray, angle: float) -> np.ndarray:
+    axis = axis / np.linalg.norm(axis)
+    x, y, z = axis
+    c, s = math.cos(angle), math.sin(angle)
+    return np.array([
+        [c + x * x * (1 - c), x * y * (1 - c) - z * s, x * z * (1 - c) + y * s],
+        [y * x * (1 - c) + z * s, c + y * y * (1 - c), y * z * (1 - c) - x * s],
+        [z * x * (1 - c) - y * s, z * y * (1 - c) + x * s, c + z * z * (1 - c)],
+    ])
+
+
+def _transform(rotation: np.ndarray, translation: Iterable[float]) -> np.ndarray:
+    result = np.eye(4)
+    result[:3, :3] = rotation
+    result[:3, 3] = translation
+    return result
+
+
+class CrtkComponent:
+    """Backend-independent component exposing CRTK-style state and commands."""
+
+    def __init__(self, config: RobotConfig, adaptor_offset: float, adaptor_rpy: tuple[float, float, float]):
+        self.config = config
+        self._q = config.home_position.copy()
+        self._qdot = np.zeros(len(config.joints), dtype=float)
+        self._target_q = self._q.copy()
+        self._adaptor_offset = float(adaptor_offset)
+        self._adaptor_rpy = adaptor_rpy
+        self._joint_origins = self._make_joint_origins()
+
+    def _make_joint_origins(self) -> tuple[tuple[np.ndarray, tuple[float, float, float]], ...]:
+        origins = [(np.zeros(3), (0.0, 0.0, 0.0)) for _ in self.config.joints]
+        if len(origins) >= 3:
+            origins[2] = (np.array([0.0, 0.0, self._adaptor_offset]), self._adaptor_rpy)
+        return tuple(origins)
+
+    def _joint_axes(self) -> tuple[np.ndarray, ...]:
+        raise NotImplementedError
+
+    def _forward_with_jacobian(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if q.shape != (len(self.config.joints),):
+            raise ValueError("joint position has the wrong size")
+        transform = _transform(_quaternion_matrix_xyzw(self.config.base_orientation_xyzw), self.config.base_position)
+        axes_world = []
+        origins_world = []
+        joint_types = []
+        for index, (joint, axis, (origin_xyz, origin_rpy)) in enumerate(zip(self.config.joints, self._joint_axes(), self._joint_origins)):
+            origin_transform = _transform(_rpy_matrix(*origin_rpy), origin_xyz)
+            transform = transform @ origin_transform
+            origins_world.append(transform[:3, 3].copy())
+            axes_world.append(transform[:3, :3] @ axis)
+            joint_types.append(joint.type)
+            if joint.type == "revolute":
+                transform = transform @ _transform(_rotation(axis, q[index]), [0.0, 0.0, 0.0])
+            else:
+                transform = transform @ _transform(np.eye(3), axis * q[index])
+
+        position = transform[:3, 3]
+        jacobian = np.zeros((6, len(self.config.joints)))
+        for index, (axis, origin, joint_type) in enumerate(zip(axes_world, origins_world, joint_types)):
+            if joint_type == "revolute":
+                jacobian[:3, index] = np.cross(axis, position - origin)
+                jacobian[3:, index] = axis
+            else:
+                jacobian[:3, index] = axis
+        return transform, jacobian
+
+    def measured_js(self) -> JointState:
+        return JointState(tuple(joint.name for joint in self.config.joints), self._q.copy(), self._qdot.copy())
+
+    def measured_cp(self, frame: str | None = None) -> Pose:
+        if frame not in (None, self.config.tool_frame, self.config.adaptor_frame):
+            raise ValueError(f"unknown frame {frame!r}")
+        transform, _ = self._forward_with_jacobian(self._q)
+        return Pose(transform[:3, 3].copy(), transform[:3, :3].copy())
+
+    def measured_cv(self, frame: str | None = None) -> Twist:
+        _, jacobian = self._forward_with_jacobian(self._q)
+        velocity = jacobian @ self._qdot
+        return Twist(velocity[:3].copy(), velocity[3:].copy())
+
+    def goal_js(self) -> JointState:
+        """Return the current move/servo joint goal using CRTK naming."""
+        return JointState(tuple(joint.name for joint in self.config.joints), self._target_q.copy(), np.zeros_like(self._target_q))
+
+    def is_busy(self) -> bool:
+        return bool(np.any(np.abs(self._q - self._target_q) > 1e-9))
+
+    def move_jp(self, joint_position: Iterable[float]) -> None:
+        target = self._validate_joint_position(joint_position)
+        self._target_q = target
+
+    def servo_jp(self, joint_position: Iterable[float]) -> None:
+        self.move_jp(joint_position)
+
+    def step(self, dt: float) -> None:
+        if dt < 0.0:
+            raise ValueError("dt must be non-negative")
+        delta = self._target_q - self._q
+        max_delta = np.array([joint.velocity for joint in self.config.joints]) * dt
+        applied = np.clip(delta, -max_delta, max_delta)
+        self._qdot = applied / dt if dt > 0.0 else np.zeros_like(applied)
+        self._q += applied
+        if np.allclose(self._q, self._target_q):
+            self._qdot[:] = 0.0
+
+    def compute_fk(self, q: Iterable[float] | None = None, frame: str | None = None) -> Pose:
+        values = self._q if q is None else self._validate_joint_position(q)
+        if frame not in (None, self.config.tool_frame, self.config.adaptor_frame):
+            raise ValueError(f"unknown frame {frame!r}")
+        transform, _ = self._forward_with_jacobian(values)
+        return Pose(transform[:3, 3].copy(), transform[:3, :3].copy())
+
+    def compute_jacobian(self, q: Iterable[float] | None = None, frame: str | None = None) -> np.ndarray:
+        values = self._q if q is None else self._validate_joint_position(q)
+        if frame not in (None, self.config.tool_frame, self.config.adaptor_frame):
+            raise ValueError(f"unknown frame {frame!r}")
+        _, jacobian = self._forward_with_jacobian(values)
+        return jacobian
+
+    def compute_ik(self, target: Pose, seed: Iterable[float] | None = None, max_iterations: int = 100) -> IKResult:
+        q = self._q.copy() if seed is None else self._validate_joint_position(seed)
+        tolerance = 1e-5
+        for iteration in range(max_iterations):
+            pose = self.compute_fk(q)
+            error = target.position - pose.position
+            if np.linalg.norm(error) < tolerance:
+                return IKResult(q, True, iteration, float(np.linalg.norm(error)), "position converged")
+            jacobian = self.compute_jacobian(q)[:3, :]
+            step = jacobian.T @ np.linalg.solve(jacobian @ jacobian.T + 1e-6 * np.eye(3), error)
+            q = self._clip_joint_position(q + 0.5 * step)
+        error_norm = float(np.linalg.norm(target.position - self.compute_fk(q).position))
+        return IKResult(q, error_norm < tolerance, max_iterations, error_norm, "position IK did not converge")
+
+    def move_cp(self, target: Pose) -> IKResult:
+        result = self.compute_ik(target)
+        if result.success:
+            self.move_jp(result.position)
+        return result
+
+    def _clip_joint_position(self, position: np.ndarray) -> np.ndarray:
+        lower = np.array([joint.lower for joint in self.config.joints])
+        upper = np.array([joint.upper for joint in self.config.joints])
+        return np.clip(position, lower, upper)
+
+    def _validate_joint_position(self, position: Iterable[float]) -> np.ndarray:
+        result = np.asarray(list(position), dtype=float)
+        if result.shape != (len(self.config.joints),):
+            raise ValueError("joint position has the wrong size")
+        lower = np.array([joint.lower for joint in self.config.joints])
+        upper = np.array([joint.upper for joint in self.config.joints])
+        if np.any(result < lower) or np.any(result > upper):
+            raise ValueError("joint position exceeds configured limits")
+        return result
+
+
+class CrtkPSM(CrtkComponent):
+    """Three-DOF virtual PSM: yaw, pitch, and insertion."""
+
+    def __init__(self, config: RobotConfig):
+        if config.type != "psm" or len(config.joints) != 3:
+            raise ValueError("CrtkPSM requires a three-joint PSM configuration")
+        super().__init__(config, adaptor_offset=0.4826, adaptor_rpy=(math.pi, 0.0, -math.pi / 2.0))
+
+    def _joint_axes(self) -> tuple[np.ndarray, ...]:
+        return (np.array([0.0, -1.0, 0.0]), np.array([-1.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0]))
+
+
+class CrtkECM(CrtkComponent):
+    """Four-DOF virtual ECM: yaw, pitch, insertion, and roll."""
+
+    def __init__(self, config: RobotConfig):
+        if config.type != "ecm" or len(config.joints) != 4:
+            raise ValueError("CrtkECM requires a four-joint ECM configuration")
+        super().__init__(config, adaptor_offset=0.3829, adaptor_rpy=(math.pi, 0.0, math.pi / 2.0))
+
+    def _joint_axes(self) -> tuple[np.ndarray, ...]:
+        return (
+            np.array([0.0, -1.0, 0.0]),
+            np.array([-1.0, 0.0, 0.0]),
+            np.array([0.0, 0.0, 1.0]),
+            np.array([0.0, 0.0, 1.0]),
+        )
+
+
+def main() -> None:
+    """Small smoke-test entry point installed with the ROS 2 package."""
+    print("dvrk_isaac_sim kinematic core is available; launch integration is not implemented yet")

@@ -1,0 +1,8 @@
+scene:
+  name: ECM_PSM1_PSM2_PSM3
+  base_frame_provider: yaml
+  robots:
+    - config/PSM1.yaml
+    - config/PSM2.yaml
+    - config/PSM3.yaml
+    - config/ECM.yaml

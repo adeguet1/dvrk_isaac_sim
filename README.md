@@ -19,13 +19,14 @@ Full patient-cart CAD, dynamics, contact simulation, and hardware-runtime depend
 
 ## Documentation
 
+- [Installation and runtime environment](docs/installation.md)
 - [Design specification](docs/design.md)
 - [Frames and conventions](docs/frames.md)
 - [ROS 2 interface](docs/ros_interface.md)
-- [PSM configuration](config/psm1.yaml)
-- [ECM configuration](config/ecm.yaml)
-- [Two-PSM scene](config/scenes/psm2_ecm.yaml)
-- [Three-PSM scene](config/scenes/psm3_ecm.yaml)
+- [PSM configuration](config/PSM1.yaml)
+- [ECM configuration](config/ECM.yaml)
+- [Two-PSM scene](config/scenes/ECM_PSM1_PSM2.yaml)
+- [Three-PSM scene](config/scenes/ECM_PSM1_PSM2_PSM3.yaml)
 
 ## dVRK resources
 
@@ -37,3 +38,10 @@ Full patient-cart CAD, dynamics, contact simulation, and hardware-runtime depend
 
 The simulator reuses dVRK model assets and interface conventions but does not require the dVRK runtime, cisst, or SAW.
 
+The initial ROS 2 adapter can be run for one configured component:
+
+```bash
+ros2 run dvrk_isaac_sim dvrk_isaac_sim_ros \
+  --ros-args -r __ns:=/PSM1 \
+  -p robot_config:=/path/to/config/PSM1.yaml
+```
