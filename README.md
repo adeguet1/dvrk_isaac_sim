@@ -38,6 +38,24 @@ Full patient-cart CAD, dynamics, contact simulation, and hardware-runtime depend
 
 The simulator reuses dVRK model assets and interface conventions but does not require the dVRK runtime, cisst, or SAW.
 
+The recommended workflow is to build and launch through ROS 2:
+
+```bash
+mkdir -p /path/to/isaac_sim_ws/src
+cd /path/to/isaac_sim_ws/src
+git clone https://github.com/collaborative-robotics/crtk_msgs.git
+git clone https://github.com/jhu-dvrk/dvrk_model.git
+git clone /path/to/dvrk_isaac_sim
+
+cd /path/to/isaac_sim_ws/src/dvrk_isaac_sim
+export ISAAC_SIM_DIR=/path/to/isaac-sim
+./scripts/build.sh
+
+source /opt/ros/jazzy/setup.bash
+source /path/to/isaac_sim_ws/install/setup.bash
+ros2 launch dvrk_isaac_sim run_sim.launch.py
+```
+
 The initial ROS 2 adapter can be run for one configured component:
 
 ```bash
