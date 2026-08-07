@@ -5,7 +5,11 @@ import pytest
 
 from dvrk_isaac_sim.config import load_robot_config
 from dvrk_isaac_sim.kinematics import CrtkECM, CrtkPSM, Pose
-from dvrk_isaac_sim.ros_interface import CrtkOperatingState
+from dvrk_isaac_sim.ros_interface import (
+    CrtkOperatingState,
+    _VIEW_TO_OPTICAL_ROTATION,
+    _view_pose_from_optical,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -81,3 +85,14 @@ def test_psm_pose_ik_reaches_orientation():
     solved = robot.compute_fk(result.position)
     np.testing.assert_allclose(solved.position, target.position, atol=1e-4)
     np.testing.assert_allclose(solved.orientation, target.orientation, atol=1e-4)
+
+
+def test_dvrk_view_axes_are_derived_from_ecm_optical_axes():
+    optical = Pose(np.zeros(3), np.eye(3))
+    view = _view_pose_from_optical(optical)
+    # dVRK view: X-left, Y-up, Z-away. Isaac camera optical: X-forward,
+    # Y-left, Z-up. Therefore V(X,Y,Z) maps to C(Y,Z,X).
+    np.testing.assert_allclose(view.orientation, _VIEW_TO_OPTICAL_ROTATION)
+    np.testing.assert_allclose(view.orientation @ [1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+    np.testing.assert_allclose(view.orientation @ [0.0, 1.0, 0.0], [0.0, 0.0, 1.0])
+    np.testing.assert_allclose(view.orientation @ [0.0, 0.0, 1.0], [1.0, 0.0, 0.0])

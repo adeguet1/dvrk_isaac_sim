@@ -222,9 +222,28 @@ def main() -> int:
             if not args.no_ecm:
                 add_component("ECM", args.ecm_config, manifest=args.ecm_kinematics)
 
+        # PSM Cartesian CRTK topics are expressed in the moving ECM optical
+        # frame, as on a dVRK system. Wire this after all components exist
+        # because scene YAML may list the PSMs before the ECM.
+        ecm_component = next((component for _, component, _, _ in nodes
+                              if component.config.type == "ecm"), None)
+        if ecm_component is not None:
+            # PSM Cartesian topics use dVRK view axes, derived from the
+            # current ECM optical FK rather than raw optical-camera axes.
+            ecm_view_frame = f"{ecm_component.config.name}_view"
+            for _, component, _, _ in nodes:
+                if component.config.type == "psm":
+                    component.set_cartesian_reference(ecm_component.model, ecm_view_frame)
+
         if not args.headless:
             from dvrk_isaac_sim.isaac_ui import IsaacCrtkWindow
             ui_window = IsaacCrtkWindow([component for _, component, _, _ in nodes])
+
+        # Advance ECM first so every PSM reads the current, not previous-step,
+        # camera pose when converting Cartesian state and commands.
+        ordered_nodes = sorted(
+            nodes, key=lambda item: 0 if item[1].config.type == "ecm" else 1
+        )
 
         timeline = get_timeline_interface()
         timeline.play()
@@ -241,12 +260,15 @@ def main() -> int:
             dt = max(0.0, current_time - previous_time)
             previous_time = current_time
 
-            for node, component, visual, camera in nodes:
+            for node, component, visual, camera in ordered_nodes:
                 rclpy.spin_once(node, timeout_sec=0.0)
                 component.model.step(dt)
                 measured = component.model.measured_js()
                 if visual is not None:
-                    visual.update(measured.names, measured.position)
+                    visual.update(
+                        measured.names, measured.position,
+                        component.jaw_position,
+                    )
                 component.publish(_ros_time(current_time))
                 if camera is not None:
                     camera.publish(current_time, component.model.measured_cp())

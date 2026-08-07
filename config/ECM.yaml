@@ -62,3 +62,5 @@ robot:
     far_clip_m: 10.0
     encoding: rgba8
     baseline_m: 0.006
+    publish_rate_hz: 30.0
+    jpeg_quality: 85

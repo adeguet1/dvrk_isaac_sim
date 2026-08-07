@@ -38,6 +38,12 @@ class CrtkUsdVisual:
         wrist_yaw_path = f"{wrist_pitch_path}/{component_name}_wrist_yaw_link"
         if self._stage.GetPrimAtPath(wrist_yaw_path).IsValid():
             self._ops["wrist_yaw"] = self._add_rotate(wrist_yaw_path, "Z")
+            jaw_1_path = f"{wrist_yaw_path}/{component_name}_jaw_1_link"
+            jaw_2_path = f"{wrist_yaw_path}/{component_name}_jaw_2_link"
+            if self._stage.GetPrimAtPath(jaw_1_path).IsValid():
+                self._ops["jaw_1"] = self._add_rotate(jaw_1_path, "Z")
+            if self._stage.GetPrimAtPath(jaw_2_path).IsValid():
+                self._ops["jaw_2"] = self._add_rotate(jaw_2_path, "Z")
 
     def _xform(self, prim_path: str):
         prim = self._stage.GetPrimAtPath(prim_path)
@@ -55,7 +61,10 @@ class CrtkUsdVisual:
             opSuffix="crtk",
         )
 
-    def update(self, joint_names: tuple[str, ...], joint_position: np.ndarray) -> None:
+    def update(
+        self, joint_names: tuple[str, ...], joint_position: np.ndarray,
+        jaw_position: float | None = None,
+    ) -> None:
         values = dict(zip(joint_names, joint_position))
         if "yaw" in values:
             self._ops["yaw"].Set(float(-np.degrees(values["yaw"])))
@@ -69,3 +78,9 @@ class CrtkUsdVisual:
             self._ops["wrist_pitch"].Set(float(np.degrees(values["wrist_pitch"])))
         if "wrist_yaw" in values and "wrist_yaw" in self._ops:
             self._ops["wrist_yaw"].Set(float(np.degrees(values["wrist_yaw"])))
+        if jaw_position is not None:
+            # Instrument URDFs define the two jaws as +/- 0.5 mimic joints.
+            if "jaw_1" in self._ops:
+                self._ops["jaw_1"].Set(float(np.degrees(0.5 * jaw_position)))
+            if "jaw_2" in self._ops:
+                self._ops["jaw_2"].Set(float(np.degrees(-0.5 * jaw_position)))

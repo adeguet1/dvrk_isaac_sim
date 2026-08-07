@@ -80,12 +80,13 @@ The ECM publishes a rendered endoscope view through ROS 2 image transport:
 
 ```text
 /ECM/image_raw
+/ECM/image_raw/compressed
 /ECM/camera_info
 ```
 
 `/ECM/image_raw` is the raw-image base topic. `image_transport` may expose compressed or other transport variants without requiring changes to the simulator camera implementation. Topic names, encoding, and camera profile are configurable.
 
-The image and camera-info messages use the same simulation timestamp and the configured ECM optical frame ID. Select `camera:=mono`, `camera:=stereo`, or `camera:=off` at launch. Stereo uses `/ECM/left/...` and `/ECM/right/...` topics.
+The raw and JPEG-compressed image topics are published at the configured camera rate (default 30 Hz), independently of the simulation update rate. The image and camera-info messages use the same simulation timestamp and the configured ECM optical frame ID. Select `camera:=mono`, `camera:=stereo`, or `camera:=off` at launch. Stereo uses `/ECM/left/...` and `/ECM/right/...` topics.
 
 The current adapter also publishes state topics:
 
@@ -144,3 +145,14 @@ The ROS adapter must keep message conversion separate from robot logic. Each sup
 Internal classes and methods should use the same CRTK vocabulary: `measured_js`, `measured_cp`, `measured_cv`, `move_jp`, `servo_jp`, `move_cp`, `servo_cp`, `state`, and `operating_state`. Isaac-specific names belong only in the Isaac backend.
 
 Image transport is a separate sensor interface and does not need a CRTK state or command name. Its camera pose is owned by the ECM optical frame.
+
+### PSM jaw interface
+
+PSMs expose a logical one-joint `jaw` interface in radians. Both `jaw/move_jp` and `jaw/servo_jp` accept a `sensor_msgs/msg/JointState` with one position value. The value drives the two generated instrument jaw links using their URDF mimic ratios (+0.5 and -0.5). State is reported on `jaw/measured_js` and `jaw/setpoint_js`.
+
+The default 420006 limits are -0.349066 to 1.39626 radians; commands outside the configured limits are rejected.
+
+### PSM Cartesian reference frame
+
+When an ECM is present, PSM `measured_cp`, `setpoint_cp`, and `measured_cv` are published in the current `ECM_view` frame. The conversion is explicitly FK-based: PSM world FK is transformed into the PSM base frame, then into the current dVRK view frame derived from ECM optical FK (X-left, Y-up, Z-away). Incoming PSM `move_cp` and `servo_cp` commands follow the reverse path—current ECM view frame to PSM base frame to world—before inverse kinematics. This keeps Cartesian teleoperation aligned while the ECM moves. A command with `header.frame_id: world` is accepted as an explicit world-frame diagnostic command.
+

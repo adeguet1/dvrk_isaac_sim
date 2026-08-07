@@ -50,7 +50,7 @@ class IsaacCameraPublisher:
         if mode not in {"mono", "stereo"}:
             raise ValueError(f"unsupported camera mode: {mode}")
         from isaacsim.sensors.camera import Camera
-        from sensor_msgs.msg import CameraInfo, Image
+        from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 
         camera_config = config.raw.get("robot", {}).get("camera", {})
         self.node = node
@@ -63,7 +63,13 @@ class IsaacCameraPublisher:
         self.fov = math.radians(float(camera_config.get("horizontal_fov_deg", 60.0)))
         self.near = float(camera_config.get("near_clip_m", 0.01))
         self.far = float(camera_config.get("far_clip_m", 10.0))
+        self.publish_rate = float(camera_config.get("publish_rate_hz", 30.0))
+        self.jpeg_quality = int(camera_config.get("jpeg_quality", 85))
+        if self.publish_rate <= 0.0:
+            raise ValueError("camera.publish_rate_hz must be positive")
+        self._last_capture = float("-inf")
         self._Image = Image
+        self._CompressedImage = CompressedImage
         self._CameraInfo = CameraInfo
         self._cameras = []
         self._publishers = []
@@ -86,6 +92,7 @@ class IsaacCameraPublisher:
             self._cameras.append(camera)
             self._publishers.append((
                 node.create_publisher(Image, f"image_raw{suffix}", 10),
+                node.create_publisher(CompressedImage, f"image_raw{suffix}/compressed", 10),
                 node.create_publisher(CameraInfo, f"camera_info{suffix}", 10),
             ))
         node.get_logger().info(f"ECM {mode} camera publishing image_raw and camera_info")
@@ -109,6 +116,27 @@ class IsaacCameraPublisher:
         message.data = data.tobytes()
         return message
 
+    def _compressed_message(self, data: np.ndarray, stamp):
+        import cv2
+
+        if data.ndim == 2:
+            rgb = data
+        else:
+            rgb = data[:, :, :3]
+        # cv2 expects BGR for JPEG encoding; Isaac returns RGBA/RGB.
+        bgr = cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2BGR)
+        success, encoded = cv2.imencode(
+            ".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
+        )
+        if not success:
+            raise RuntimeError("JPEG encoding failed")
+        message = self._CompressedImage()
+        message.header.stamp = stamp
+        message.header.frame_id = self.frame_id
+        message.format = "jpeg"
+        message.data = encoded.tobytes()
+        return message
+
     def _camera_info(self, stamp):
         info = self._CameraInfo()
         info.header.stamp = stamp
@@ -125,10 +153,12 @@ class IsaacCameraPublisher:
         return info
 
     def publish(self, seconds: float, pose: Pose) -> None:
+        if seconds - self._last_capture < 1.0 / self.publish_rate:
+            return
         from builtin_interfaces.msg import Time
         stamp = Time(sec=int(seconds), nanosec=int((seconds - int(seconds)) * 1e9))
         orientation = _quaternion_wxyz(pose.orientation)
-        for index, (camera, (image_publisher, info_publisher)) in enumerate(zip(self._cameras, self._publishers)):
+        for index, (camera, (image_publisher, compressed_publisher, info_publisher)) in enumerate(zip(self._cameras, self._publishers)):
             position = pose.position.copy()
             if self.mode == "stereo":
                 position += pose.orientation[:, 0] * (self.baseline / 2.0) * (-1.0 if index == 0 else 1.0)
@@ -139,5 +169,7 @@ class IsaacCameraPublisher:
             data = camera.get_rgba()
             if data is None:
                 continue
+            self._last_capture = seconds
             image_publisher.publish(self._image_message(data, stamp, str(index)))
+            compressed_publisher.publish(self._compressed_message(data, stamp))
             info_publisher.publish(self._camera_info(stamp))

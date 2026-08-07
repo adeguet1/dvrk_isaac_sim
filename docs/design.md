@@ -8,7 +8,7 @@ The initial simulator is kinematic. It does not depend on dVRK Classic, dVRK Si,
 
 The first supported devices are:
 
-- PSM: yaw, pitch, insertion, roll, wrist pitch, and wrist yaw control with a selectable dVRK instrument visual; jaw remains a separate logical joint.
+- PSM: yaw, pitch, insertion, roll, wrist pitch, and wrist yaw control with a selectable dVRK instrument visual; jaw is a separate logical CRTK joint driving URDF-mimic jaw visuals.
 - ECM: yaw, pitch, insertion, and roll control with a minimal endoscope visual and rendered endoscope view.
 
 The simulator can start with either two or three PSM instances. PSM instances are independently configured and use namespaces `/PSM1`, `/PSM2`, and `/PSM3`.

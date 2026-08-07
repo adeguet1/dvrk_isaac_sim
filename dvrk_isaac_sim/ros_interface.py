@@ -11,6 +11,60 @@ from .config import RobotConfig, load_robot_config
 from .kinematics import CrtkECM, CrtkPSM, CrtkComponent, Pose
 
 
+# Isaac's world-camera axes are +X forward, +Y left, +Z up.  dVRK
+# teleoperation uses X left, Y up, Z away from the operator.  This maps
+# dVRK view coordinates into the ECM optical/camera coordinates.
+_VIEW_TO_OPTICAL_ROTATION = np.array([
+    [0.0, 0.0, 1.0],
+    [1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+])
+
+
+def _compose_pose(first: Pose, second: Pose) -> Pose:
+    """Compose two poses represented as rotation/translation matrices."""
+    return Pose(
+        first.position + first.orientation @ second.position,
+        first.orientation @ second.orientation,
+    )
+
+
+def _inverse_pose(pose: Pose) -> Pose:
+    """Return the inverse of a rigid pose."""
+    rotation = pose.orientation.T
+    return Pose(-rotation @ pose.position, rotation)
+
+
+def _relative_pose(pose: Pose, reference: Pose) -> Pose:
+    """Express ``pose`` in the coordinate frame represented by ``reference``."""
+    return _compose_pose(_inverse_pose(reference), pose)
+
+
+def _view_pose_from_optical(optical_pose: Pose) -> Pose:
+    """Return the dVRK view pose derived from the current ECM optical FK."""
+    return _compose_pose(
+        optical_pose, Pose(np.zeros(3), _VIEW_TO_OPTICAL_ROTATION)
+    )
+
+
+def _quaternion_matrix_xyzw(quaternion: np.ndarray) -> np.ndarray:
+    x, y, z, w = quaternion / np.linalg.norm(quaternion)
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
+
+
+def _relative_twist(pose: Pose, twist, reference: Pose, reference_twist) -> tuple[np.ndarray, np.ndarray]:
+    """Express a world twist in a moving reference frame."""
+    delta = pose.position - reference.position
+    linear = twist.linear - reference_twist.linear - np.cross(reference_twist.angular, delta)
+    angular = twist.angular - reference_twist.angular
+    rotation = reference.orientation.T
+    return rotation @ linear, rotation @ angular
+
+
 def _quaternion_xyzw(rotation: np.ndarray) -> tuple[float, float, float, float]:
     """Convert a rotation matrix to an ROS-order quaternion."""
     trace = float(np.trace(rotation))
@@ -130,9 +184,20 @@ class CrtkRosComponent:
         initial_state = CrtkOperatingState.ENABLED
         self._operating_state = CrtkOperatingState(initial_state)
         self._has_jaw = config.type == "psm"
+        jaw_config = config.raw.get("robot", {}).get("jaw", {})
+        self._jaw_lower = float(jaw_config.get("lower", -0.349066))
+        self._jaw_upper = float(jaw_config.get("upper", 1.39626))
         self._jaw_position = 0.0
         self._jaw_velocity = 0.0
         self._frame_id = str(config.raw.get("robot", {}).get("cartesian", {}).get("reference_frame", config.parent_frame))
+        self._cartesian_reference: CrtkComponent | None = None
+        self._cartesian_reference_frame = self._frame_id
+        # Static world pose of this PSM base frame. The ECM view pose is
+        # dynamic and is evaluated from ECM FK for every conversion.
+        self._base_pose = Pose(
+            config.base_position.copy(),
+            _quaternion_matrix_xyzw(config.base_orientation_xyzw),
+        )
         state_qos = QoSProfile(depth=1)
         state_qos.reliability = ReliabilityPolicy.RELIABLE
         state_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
@@ -153,6 +218,9 @@ class CrtkRosComponent:
         node.create_subscription(PoseStamped, "move_cp", self._move_cp_callback, 10)
         node.create_subscription(PoseStamped, "servo_cp", self._servo_cp_callback, 10)
         if self._has_jaw:
+            self._jaw_move_subscription = node.create_subscription(
+                JointState, "jaw/move_jp", self._jaw_servo_jp_callback, 10
+            )
             self._jaw_servo_subscription = node.create_subscription(
                 JointState, "jaw/servo_jp", self._jaw_servo_jp_callback, 10
             )
@@ -160,6 +228,87 @@ class CrtkRosComponent:
             StringStamped, "state_command", self._state_command_callback, 10
         )
         self._publish_operating_state(node.get_clock().now().to_msg())
+
+    def set_cartesian_reference(self, reference: CrtkComponent, frame_id: str) -> None:
+        """Use a moving ECM pose as the PSM Cartesian reference frame.
+
+        PSM Cartesian ROS topics are expressed in the current dVRK view
+        frame derived from ECM optical FK. Joint topics remain local to the
+        PSM and are unaffected.
+        """
+        if self.config.type != "psm":
+            return
+        self._cartesian_reference = reference
+        self._cartesian_reference_frame = str(frame_id)
+        self._frame_id = self._cartesian_reference_frame
+
+    def _view_to_base(self) -> Pose:
+        """Return the current transform from ECM view coordinates to PSM base."""
+        if self._cartesian_reference is None:
+            return _inverse_pose(self._base_pose)
+        # T_BV = inverse(T_WB) * T_WV. ECM FK supplies T_WC; the fixed
+        # optical-to-view rotation supplies T_CV. Both are needed because
+        # Cartesian teleoperation is defined in dVRK view axes, not optical axes.
+        view_pose = _view_pose_from_optical(self._cartesian_reference.measured_cp())
+        return _relative_pose(view_pose, self._base_pose)
+
+    def _world_to_base(self, pose: Pose) -> Pose:
+        return _relative_pose(pose, self._base_pose)
+
+    def _base_to_world(self, pose: Pose) -> Pose:
+        return _compose_pose(self._base_pose, pose)
+
+    def _pose_for_ros(self, pose: Pose) -> Pose:
+        if self._cartesian_reference is None:
+            return pose
+        # FK pipeline: world -> PSM base -> current ECM view.
+        base_tool = self._world_to_base(pose)
+        return _relative_pose(base_tool, self._view_to_base())
+
+    def _pose_from_ros(self, pose: Pose, frame_id: str) -> Pose:
+        if self._cartesian_reference is None:
+            return pose
+        # An explicitly world-referenced command remains useful for diagnostics
+        # and preserves the single-PSM/no-ECM mode. All normal dVRK commands
+        # use ECM_optical (or leave frame_id empty).
+        if frame_id and frame_id == self.config.parent_frame:
+            return pose
+        # Command pipeline: current ECM view -> PSM base -> world, then IK.
+        base_target = _compose_pose(self._view_to_base(), pose)
+        return self._base_to_world(base_target)
+
+    def _twist_for_ros(self, pose: Pose, twist):
+        if self._cartesian_reference is None:
+            return twist.linear, twist.angular
+        linear, angular = _relative_twist(
+            pose, twist, self._cartesian_reference.measured_cp(),
+            self._cartesian_reference.measured_cv(),
+        )
+        # _relative_twist is in ECM optical axes; publish dVRK view axes.
+        return (
+            _VIEW_TO_OPTICAL_ROTATION.T @ linear,
+            _VIEW_TO_OPTICAL_ROTATION.T @ angular,
+        )
+
+    @property
+    def jaw_position(self) -> float | None:
+        """Current logical PSM jaw position in radians."""
+        return self._jaw_position if self._has_jaw else None
+
+    def command_jaw_position(self, position: float) -> bool:
+        """Apply a GUI/ROS-equivalent jaw target with instrument limits."""
+        if not self._has_jaw or not self._motion_allowed("jaw command"):
+            return False
+        value = float(position)
+        if not self._jaw_lower <= value <= self._jaw_upper:
+            self.node.get_logger().warning(
+                f"{self.config.name} rejected jaw position {value}: "
+                f"expected [{self._jaw_lower}, {self._jaw_upper}] radians"
+            )
+            return False
+        self._jaw_position = value
+        self._jaw_velocity = 0.0
+        return True
 
     @property
     def operating_state(self) -> str:
@@ -216,8 +365,7 @@ class CrtkRosComponent:
             return
         # The virtual instrument has no jaw dynamics. Keep a single logical jaw
         # position and report it immediately as both measured and setpoint state.
-        self._jaw_position = float(message.position[0])
-        self._jaw_velocity = 0.0
+        self.command_jaw_position(float(message.position[0]))
 
     def _motion_allowed(self, command: str) -> bool:
         if self._operating_state.accepts_motion:
@@ -261,7 +409,9 @@ class CrtkRosComponent:
         if not self._motion_allowed("move_cp"):
             return
         try:
-            result = self.model.move_cp(_pose_from_ros(message))
+            result = self.model.move_cp(
+                self._pose_from_ros(_pose_from_ros(message), message.header.frame_id)
+            )
             if not result.success:
                 self.node.get_logger().warning(f"{self.config.name} move_cp failed: {result.message}")
         except ValueError as error:
@@ -271,7 +421,9 @@ class CrtkRosComponent:
         if not self._motion_allowed("servo_cp"):
             return
         try:
-            result = self.model.move_cp(_pose_from_ros(message))
+            result = self.model.move_cp(
+                self._pose_from_ros(_pose_from_ros(message), message.header.frame_id)
+            )
             if not result.success:
                 self.node.get_logger().warning(f"{self.config.name} servo_cp failed: {result.message}")
         except ValueError as error:
@@ -307,8 +459,9 @@ class CrtkRosComponent:
 
     def publish(self, stamp) -> None:
         joint_state = self.model.measured_js()
-        pose = self.model.measured_cp()
-        twist = self.model.measured_cv()
+        world_pose = self.model.measured_cp()
+        pose = self._pose_for_ros(world_pose)
+        linear, angular = self._twist_for_ros(world_pose, self.model.measured_cv())
 
         measured_js = self._JointState()
         measured_js.header.stamp = stamp
@@ -331,8 +484,8 @@ class CrtkRosComponent:
         measured_cv = self._TwistStamped()
         measured_cv.header.stamp = stamp
         measured_cv.header.frame_id = self._frame_id
-        measured_cv.twist.linear.x, measured_cv.twist.linear.y, measured_cv.twist.linear.z = twist.linear
-        measured_cv.twist.angular.x, measured_cv.twist.angular.y, measured_cv.twist.angular.z = twist.angular
+        measured_cv.twist.linear.x, measured_cv.twist.linear.y, measured_cv.twist.linear.z = linear
+        measured_cv.twist.angular.x, measured_cv.twist.angular.y, measured_cv.twist.angular.z = angular
         self.measured_cv_publisher.publish(measured_cv)
 
         setpoint = self._JointState()
