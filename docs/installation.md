@@ -199,56 +199,58 @@ the project uses kinematic motion and does not need PhysX rigid bodies. Use
 
 ## Isaac Sim ROS 2 simulation
 
-The launch file starts the configured multi-device kinematic scene, generates missing PSM/ECM conversion artifacts, and validates ROS 2, custom messages, simulation time, and PSM/ECM topic connectivity. The default profile starts PSM1, PSM2, PSM3, and a meshless ECM camera model.
+The simulator is configured from `config/isaac_sim.yaml`. This file is installed
+with the package and is the recommended place to save researcher-specific
+settings. It contains the Isaac Sim path, generated-asset cache, renderer,
+startup mode, duration, and ROS environment. Scene-specific robots, instruments,
+endoscope, and camera settings belong in the selected scene YAML.
+It intentionally does not select a default scene.
 
-From the same shell where the ROS 2 workspace was sourced:
+Scenes are stored under `config/scenes/*.yaml`. The repository includes
+individual PSM examples (`PSM1_420006.yaml`, `PSM2_420093.yaml`, and
+`PSM3_420006.yaml`) plus two- and three-PSM cart scenes. Scene files select the
+robots, frames, and instrument variants.
+
+The launch command has only a few user-facing options:
+
+- `config:=...` selects a saved config file;
+- `scene:=...` selects a scene filename under `config/scenes` or an explicit YAML path;
+- `headless:=true` and `duration:=...` are temporary runtime overrides;
+- `isaac_sim_dir:=...` temporarily overrides the saved Isaac Sim path.
+
+If neither `scene:=...` nor `scene` in the config is provided, startup stops and
+prints every YAML scene found in the config file's `scenes` directory.
+
+From the sourced ROS 2 environment:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
 source /path/to/isaac_sim_ws/install/setup.bash
-
-ros2 launch dvrk_isaac_sim run_sim.launch.py
+ros2 launch dvrk_isaac_sim run_sim.launch.py scene:=PSM1_420006.yaml
 ```
 
-The launch file loads the saved Isaac Sim path and starts `${ISAAC_SIM_DIR}/python.sh`. It can also be overridden without rebuilding:
+To save settings, copy the example config and edit it:
 
 ```bash
+cp /path/to/isaac_sim_ws/install/dvrk_isaac_sim/share/dvrk_isaac_sim/config/isaac_sim.yaml \
+   /path/to/my-dvrk-isaac.yaml
+$EDITOR /path/to/my-dvrk-isaac.yaml
 ros2 launch dvrk_isaac_sim run_sim.launch.py \
-  isaac_sim_dir:=/path/to/isaac-sim \
-  headless:=true
+  config:=/path/to/my-dvrk-isaac.yaml scene:=ECM_PSM1_PSM2_PSM3.yaml
 ```
 
-Select the two-PSM or three-PSM scene and choose the ECM camera mode:
-
-```bash
-ros2 launch dvrk_isaac_sim run_sim.launch.py \
-  scene_config:=/path/to/isaac_sim_ws/src/dvrk_isaac_sim/config/scenes/ECM_PSM1_PSM2.yaml \
-  camera:=mono
-ros2 launch dvrk_isaac_sim run_sim.launch.py camera:=stereo
-```
-
-Mono publishes `/ECM/image_raw` and `/ECM/camera_info`; stereo publishes the corresponding `left` and `right` subtopics. Use `camera:=off` to disable rendering publication.
-
-Alternatively, select one arm and let the launch file generate its USD asset
-when the cache is missing:
-
-```bash
-ros2 launch dvrk_isaac_sim run_sim.launch.py \
-  arm:=PSM1 \
-  generated_dir:=/path/to/isaac_sim_ws/.generated/isaacsim-6.0
-```
-
-Use `arm:=ECM`, `arm:=PSM2`, or `arm:=PSM3` as appropriate. The selected arm
-is the only kinematic component started by this mode. `instrument:=420006` and
-`endoscope:=Si_straight` customize conversion defaults. Variant-specific
-assets are cached as `PSM1_420006` or `ECM_Si_straight`.
+Set `camera.mode` to `mono`, `stereo`, or `off` in the scene YAML. Set
+`renderer` to the desired Isaac Sim renderer in the config YAML. Mono publishes `/ECM/image_raw` and
+`/ECM/camera_info`; stereo publishes corresponding `left` and `right` topics.
+Missing USD/URDF conversion artifacts are generated automatically in the
+configured `generated_dir`. Users normally do not need to pass conversion paths
+or individual asset paths on the launch command line.
 
 In a second shell, source the same environments and inspect the topics:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
 source /path/to/isaac_sim_ws/install/setup.bash
-
 ros2 topic list | grep -E '^/(PSM1|ECM)/'
 ros2 topic echo /PSM1/measured_js
 ros2 topic echo /ECM/measured_cp
@@ -261,4 +263,5 @@ ros2 topic pub --once /PSM1/move_jp sensor_msgs/msg/JointState \
   "{name: [yaw, pitch, insertion, roll, wrist_pitch, wrist_yaw], position: [0.2, -0.1, 0.12, 0.0, 0.0, 0.0]}"
 ```
 
-The corresponding `measured_js` and `measured_cp` values should move over subsequent simulation steps. The smoke test prints a successful `crtk_msgs/msg/OperatingState` import before entering the simulation loop.
+The corresponding `measured_js` and `measured_cp` values should move over
+subsequent simulation steps.

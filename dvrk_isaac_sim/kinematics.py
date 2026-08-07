@@ -263,7 +263,7 @@ class CrtkPSM(CrtkComponent):
     """Six-DOF virtual PSM: RCM plus roll, wrist pitch, and wrist yaw."""
 
     def __init__(self, config: RobotConfig):
-        if config.type != "psm" or len(config.joints) != 6:
+        if config.type != "PSM" or len(config.joints) != 6:
             raise ValueError("CrtkPSM requires six configured joints")
         super().__init__(config, adaptor_offset=0.4826, adaptor_rpy=(math.pi, 0.0, -math.pi / 2.0))
 
@@ -293,7 +293,7 @@ class CrtkECM(CrtkComponent):
     """Four-DOF virtual ECM: yaw, pitch, insertion, and roll."""
 
     def __init__(self, config: RobotConfig):
-        if config.type != "ecm" or len(config.joints) != 4:
+        if config.type != "ECM" or len(config.joints) != 4:
             raise ValueError("CrtkECM requires a four-joint ECM configuration")
         super().__init__(config, adaptor_offset=0.3829, adaptor_rpy=(math.pi, 0.0, math.pi / 2.0))
 

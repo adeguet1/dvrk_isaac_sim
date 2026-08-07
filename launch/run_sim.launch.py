@@ -1,7 +1,6 @@
-"""Start the dVRK Isaac Sim smoke test through the Isaac Sim Python launcher."""
+"""Start the configured dVRK Isaac Sim scene through Isaac Sim Python."""
 
 from pathlib import Path
-import os
 import shlex
 
 import yaml
@@ -9,161 +8,127 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, LogInfo, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
+from dvrk_isaac_sim.config import load_robot_document
+
+
+def _resolve(config_path: Path, value, default=None):
+    value = default if value in (None, "") else value
+    if value in (None, ""):
+        return None
+    path = Path(str(value)).expanduser()
+    return path if path.is_absolute() else (config_path.parent / path).resolve()
 
 
 def _start_sim(context):
     package_share = Path(get_package_share_directory("dvrk_isaac_sim"))
-    configured_path = package_share / "config" / "isaac_sim.yaml"
-    configured = {}
-    if configured_path.exists():
-        with configured_path.open("r", encoding="utf-8") as stream:
-            configured = yaml.safe_load(stream) or {}
+    config_path = Path(LaunchConfiguration("config").perform(context)).expanduser().resolve()
+    if not config_path.is_file():
+        raise RuntimeError(f"Simulator configuration not found: {config_path}")
+    configured = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(configured, dict):
+        raise RuntimeError(f"{config_path}: expected a YAML mapping")
 
-    isaac_dir = LaunchConfiguration("isaac_sim_dir").perform(context)
-    if not isaac_dir:
-        isaac_dir = configured.get("isaac_sim_dir", "")
-    if not isaac_dir:
-        raise RuntimeError(
-            "Isaac Sim path is not configured. Set ISAAC_SIM_DIR and run scripts/build.sh, "
-            "or pass isaac_sim_dir:=/path/to/isaac-sim."
-        )
+    def value(name, default=None):
+        return configured.get(name, default)
 
-    arm = LaunchConfiguration("arm").perform(context).upper()
-    valid_arms = {"PSM1", "PSM2", "PSM3", "ECM"}
-    if arm and arm not in valid_arms:
-        raise RuntimeError(f"Unsupported arm '{arm}'. Choose one of: {', '.join(sorted(valid_arms))}")
+    isaac_dir_arg = LaunchConfiguration("isaac_sim_dir").perform(context)
+    isaac_dir = Path(isaac_dir_arg).expanduser() if isaac_dir_arg else _resolve(config_path, value("isaac_sim_dir"))
+    if isaac_dir is None:
+        raise RuntimeError("Isaac Sim path is not configured. Set isaac_sim_dir:=... or isaac_sim_dir in the config file.")
+    isaac_dir = isaac_dir.resolve()
+    isaac_python = isaac_dir / "python.sh"
+    if not isaac_python.is_file():
+        raise RuntimeError(f"Isaac Sim python.sh not found: {isaac_python}")
 
-    generated_dir = LaunchConfiguration("generated_dir").perform(context)
-    generated_dir = Path(generated_dir).expanduser().resolve()
+    scene_value = LaunchConfiguration("scene").perform(context) or value("scene")
+    scenes_dir = config_path.parent / "scenes"
+    if scene_value in (None, ""):
+        available = sorted(scenes_dir.glob("*.yaml"))
+        names = "\n  ".join(path.name for path in available) or "(none)"
+        raise RuntimeError(f"No scene selected. Set scene:=... or scene in {config_path}.\nAvailable scenes:\n  {names}")
+    scene_config = Path(str(scene_value)).expanduser()
+    if not scene_config.is_absolute():
+        candidate = (config_path.parent / scene_config).resolve()
+        if not candidate.is_file() and scene_config.parent == Path("."):
+            candidate = (scenes_dir / scene_config).resolve()
+        if not candidate.suffix:
+            candidate = candidate.with_suffix(".yaml")
+        scene_config = candidate
+    scene_config = scene_config.resolve()
+    generated_dir = _resolve(config_path, value("generated_dir"))
+    if generated_dir is None:
+        raise RuntimeError(f"{config_path}: generated_dir is required")
 
-    asset = ""
-    manifest = ""
     conversion_commands = []
-    scene_config = Path(LaunchConfiguration("scene_config").perform(context)).expanduser().resolve()
-    if arm:
-        variant = (
-            LaunchConfiguration("instrument").perform(context)
-            if arm.startswith("PSM")
-            else LaunchConfiguration("endoscope").perform(context)
-        )
-        asset_name = f"{arm}_{variant}"
-        asset_path = generated_dir / asset_name / arm / f"{arm}.usda"
-        manifest_path = generated_dir / asset_name / "kinematics.json"
-        asset = str(asset_path)
-        manifest = str(manifest_path)
-        if not asset_path.is_file() or not manifest_path.is_file():
-            converter = package_share / "scripts" / "convert_dvrk_model.py"
-            converter_command = [
-                str(Path(isaac_dir) / "python.sh"),
-                str(converter),
-                "--model", arm,
-                "--output-dir", str(generated_dir),
-                "--asset-name", asset_name,
-                "--force",
-            ]
-            if arm.startswith("PSM"):
-                converter_command.extend(["--instrument", LaunchConfiguration("instrument").perform(context)])
-            else:
-                converter_command.extend(["--endoscope", LaunchConfiguration("endoscope").perform(context)])
-            conversion_commands.append(converter_command)
-    else:
-        if not scene_config.is_file():
-            raise RuntimeError(f"Scene configuration not found: {scene_config}")
-        with scene_config.open("r", encoding="utf-8") as stream:
-            scene_document = yaml.safe_load(stream) or {}
-        scene = scene_document.get("scene", scene_document)
-        scene_package_dir = scene_config.parent.parent.parent
-        for configured_robot in scene.get("robots", []):
-            robot_config = Path(configured_robot)
-            if not robot_config.is_absolute():
-                robot_config = scene_package_dir / robot_config
-            with robot_config.open("r", encoding="utf-8") as stream:
-                robot = (yaml.safe_load(stream) or {}).get("robot", {})
-            model = str(robot.get("name"))
-            variant = LaunchConfiguration("instrument").perform(context) if robot.get("type") == "psm" else LaunchConfiguration("endoscope").perform(context)
-            asset_name = f"{model}_{variant}"
-            asset_path = generated_dir / asset_name / model / f"{model}.usda"
-            manifest_path = generated_dir / asset_name / "kinematics.json"
-            if not asset_path.is_file() or not manifest_path.is_file():
-                converter = package_share / "scripts" / "convert_dvrk_model.py"
-                converter_command = [
-                    str(Path(isaac_dir) / "python.sh"), str(converter),
-                    "--model", model, "--output-dir", str(generated_dir),
-                    "--asset-name", asset_name, "--force",
-                ]
-                converter_command.extend(
-                    ["--instrument", variant] if robot.get("type") == "psm"
-                    else ["--endoscope", variant]
-                )
-                conversion_commands.append(converter_command)
+    converter = package_share / "scripts" / "convert_dvrk_model.py"
 
-    isaac_python = Path(isaac_dir) / "python.sh"
-    script = package_share / "scripts" / "run_sim.py"
-    command = [str(isaac_python), str(script),
-               "--renderer", LaunchConfiguration("renderer").perform(context)]
-    if LaunchConfiguration("headless").perform(context).lower() in {"true", "1", "yes"}:
+    def ensure_asset(model, robot_type, variant):
+        asset_name = f"{model}_{variant}"
+        asset_path = generated_dir / asset_name / model / f"{model}.usda"
+        manifest_path = generated_dir / asset_name / "kinematics.json"
+        if asset_path.is_file() and manifest_path.is_file():
+            return
+        command = [str(isaac_python), str(converter), "--model", model,
+                   "--output-dir", str(generated_dir), "--asset-name", asset_name, "--force"]
+        command.extend(["--instrument", variant] if robot_type == "PSM" else ["--endoscope", variant])
+        conversion_commands.append(command)
+
+    if not scene_config.is_file():
+        raise RuntimeError(f"Scene configuration not found: {scene_config}")
+    scene_document = yaml.safe_load(scene_config.read_text(encoding="utf-8")) or {}
+    scene = scene_document.get("scene", scene_document)
+    for configured_robot in scene.get("robots", []):
+        options = configured_robot if isinstance(configured_robot, dict) else {}
+        robot_config = Path(options.get("config", configured_robot))
+        if not robot_config.is_absolute():
+            robot_config = (scene_config.parent.parent.parent / robot_config).resolve()
+        robot = load_robot_document(robot_config).get("robot", {})
+        robot_type = str(robot.get("type", "")).upper()
+        model = str(robot.get("name"))
+        variant = (options.get("instrument", "420006") if robot_type == "PSM"
+                   else options.get("endoscope", "Si_straight"))
+        ensure_asset(model, robot_type, str(variant))
+
+    command = [str(isaac_python), str(package_share / "scripts" / "run_sim.py"),
+               "--config", str(config_path), "--scene", str(scene_config)]
+    headless = LaunchConfiguration("headless").perform(context).lower()
+    if headless in {"true", "1", "yes"}:
         command.append("--headless")
     duration = LaunchConfiguration("duration").perform(context)
     if duration and float(duration) > 0.0:
         command.extend(["--duration", duration])
-    if not arm:
-        command.extend(["--scene-config", str(scene_config), "--generated-dir", str(generated_dir),
-                        "--instrument", LaunchConfiguration("instrument").perform(context),
-                        "--endoscope", LaunchConfiguration("endoscope").perform(context)])
-    command.extend(["--camera", LaunchConfiguration("camera").perform(context)])
-    if arm == "ECM":
-        command.append("--no-psm")
-        command.extend(["--ecm-usd", asset, "--ecm-kinematics", manifest])
-        command.extend(["--ecm-config", str(package_share / "config" / "ECM.yaml")])
-    elif arm.startswith("PSM"):
-        command.append("--no-ecm")
-        command.extend(["--psm-usd", asset, "--psm-kinematics", manifest])
-        command.extend(["--psm-config", str(package_share / "config" / f"{arm}.yaml")])
 
-    for argument, launch_argument in (("psm_usd", "psm_usd"), ("ecm_usd", "ecm_usd")):
-        configured_asset = LaunchConfiguration(launch_argument).perform(context)
-        if configured_asset and not arm:
-            command.extend([f"--{argument.replace('_', '-')}", configured_asset])
-
+    ros_distro = LaunchConfiguration("ros_distro").perform(context) or str(value("ros_distro", "jazzy"))
+    rmw_implementation = LaunchConfiguration("rmw_implementation").perform(context) or str(value("rmw_implementation", "rmw_fastrtps_cpp"))
     environment = {
-        "ROS_DISTRO": LaunchConfiguration("ros_distro").perform(context),
-        "RMW_IMPLEMENTATION": LaunchConfiguration("rmw_implementation").perform(context),
+        "ROS_DISTRO": ros_distro,
+        "RMW_IMPLEMENTATION": rmw_implementation,
         "PYTHONUNBUFFERED": "1",
     }
     if conversion_commands:
-        # Keep conversion and runtime startup in one sequential action. This
-        # avoids launch event-handler races while Isaac Sim is shutting down.
         shell_command = " && ".join([shlex.join(item) for item in conversion_commands] + [shlex.join(command)])
-        return [
-            LogInfo(msg=f"Generated asset or kinematics manifest missing; converting {len(conversion_commands)} robot asset(s)"),
-            ExecuteProcess(cmd=["bash", "-c", shell_command], cwd=str(isaac_dir), additional_env=environment, output="screen"),
-        ]
-    return [
-        LogInfo(msg=f"Starting Isaac Sim with {arm or 'configured ROS components'}"),
-        ExecuteProcess(cmd=command, cwd=str(isaac_dir), additional_env=environment, output="screen"),
-    ]
+        return [LogInfo(msg=f"Generating {len(conversion_commands)} missing USD/URDF asset set(s) from dvrk_model"),
+                ExecuteProcess(cmd=["bash", "-c", shell_command], cwd=str(isaac_dir),
+                               additional_env=environment, output="screen")]
+    return [LogInfo(msg=f"Starting Isaac Sim scene {scene_config.stem}"),
+            ExecuteProcess(cmd=command, cwd=str(isaac_dir), additional_env=environment, output="screen")]
 
 
 def generate_launch_description():
     package_share = Path(get_package_share_directory("dvrk_isaac_sim"))
-    default_generated_dir = os.environ.get(
-        "DVRK_ISAAC_SIM_GENERATED_DIR",
-        str(package_share.parents[3] / ".generated" / "isaacsim-6.0"),
-    )
+    default_config = str(package_share / "config" / "isaac_sim.yaml")
     return LaunchDescription([
-        DeclareLaunchArgument("isaac_sim_dir", default_value=""),
-        DeclareLaunchArgument("headless", default_value="false"),
-        DeclareLaunchArgument("duration", default_value="0.0"),
-        DeclareLaunchArgument("arm", default_value=""),
-        DeclareLaunchArgument("scene_config", default_value=str(package_share / "config" / "scenes" / "ECM_PSM1_PSM2_PSM3.yaml")),
-        DeclareLaunchArgument("generated_dir", default_value=default_generated_dir),
-        DeclareLaunchArgument("instrument", default_value="420006"),
-        DeclareLaunchArgument("endoscope", default_value="Si_straight"),
-        DeclareLaunchArgument("camera", default_value="mono"),
-        DeclareLaunchArgument("renderer", default_value="MinimalRendering"),
-        DeclareLaunchArgument("psm_usd", default_value=""),
-        DeclareLaunchArgument("ecm_usd", default_value=""),
-        DeclareLaunchArgument("ros_distro", default_value="jazzy"),
-        DeclareLaunchArgument("rmw_implementation", default_value="rmw_fastrtps_cpp"),
+        DeclareLaunchArgument("config", default_value=default_config,
+                              description="Saved simulator config YAML"),
+        DeclareLaunchArgument("isaac_sim_dir", default_value="",
+                              description="Optional Isaac Sim path override"),
+        DeclareLaunchArgument("scene", default_value="",
+                              description="Scene YAML path or filename under config/scenes"),
+        DeclareLaunchArgument("headless", default_value="",
+                              description="Optional headless override; otherwise use config"),
+        DeclareLaunchArgument("duration", default_value="",
+                              description="Optional duration override in seconds"),
+        DeclareLaunchArgument("ros_distro", default_value=""),
+        DeclareLaunchArgument("rmw_implementation", default_value=""),
         OpaqueFunction(function=_start_sim),
     ])

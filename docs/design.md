@@ -152,9 +152,12 @@ A conceptual cache layout is:
 
 Multiple PSM instances should reference the same cached USD asset with different base transforms. Conversion must preserve joint names, link/frame names, `adaptor_link`, instrument hierarchy, materials where practical, units, limits, and source metadata.
 
-The ECM camera is configured at runtime rather than embedded in the endoscope asset. Camera properties belong to scene and ROS sensor configuration. The repository should initially contain the conversion tool and deterministic configuration, but not generated USD files. Published releases may provide pre-generated USD artifacts later for installation convenience.
+The ECM camera is configured at runtime rather than embedded in the endoscope asset. Camera properties belong to the selected scene YAML; ROS transport and publication behavior belong to the sensor implementation. The repository should initially contain the conversion tool and deterministic configuration, but not generated USD files.
 
 ## 5. Scene and base-frame configuration
+
+Robot YAML files support a repository-local `include` key. Included documents are resolved relative to the including file and deep-merged before validation; child mappings override shared values while lists are replaced as a whole. The three PSM instance files include `config/PSM.yaml`, which contains the common kinematic, velocity, instrument, and control defaults.
+
 
 Scene profiles select the devices launched in a simulation. The initial profiles are:
 

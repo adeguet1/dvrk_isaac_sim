@@ -183,7 +183,7 @@ class CrtkRosComponent:
         self._StringStamped = StringStamped
         initial_state = CrtkOperatingState.ENABLED
         self._operating_state = CrtkOperatingState(initial_state)
-        self._has_jaw = config.type == "psm"
+        self._has_jaw = config.type == "PSM"
         jaw_config = config.raw.get("robot", {}).get("jaw", {})
         self._jaw_lower = float(jaw_config.get("lower", -0.349066))
         self._jaw_upper = float(jaw_config.get("upper", 1.39626))
@@ -212,6 +212,9 @@ class CrtkRosComponent:
         self.setpoint_js_publisher = node.create_publisher(JointState, "setpoint_js", 10)
         self.operating_state_publisher = node.create_publisher(OperatingState, "operating_state", state_qos)
         self.state_publisher = node.create_publisher(StringStamped, "state", state_qos)
+        self.info_publisher = node.create_publisher(StringStamped, "info", 10)
+        self.warning_publisher = node.create_publisher(StringStamped, "warning", 10)
+        self.error_publisher = node.create_publisher(StringStamped, "error", 10)
 
         node.create_subscription(JointState, "move_jp", self._move_jp_callback, 10)
         node.create_subscription(JointState, "servo_jp", self._servo_jp_callback, 10)
@@ -228,6 +231,34 @@ class CrtkRosComponent:
             StringStamped, "state_command", self._state_command_callback, 10
         )
         self._publish_operating_state(node.get_clock().now().to_msg())
+        self._publish_info("initialized; state is ENABLED")
+
+    def _publish_message(self, publisher, message: str) -> None:
+        event = self._StringStamped()
+        event.header.stamp = self.node.get_clock().now().to_msg()
+        event.header.frame_id = self._frame_id
+        event.string = str(message)
+        publisher.publish(event)
+
+    def _publish_info(self, message: str) -> None:
+        self._publish_message(self.info_publisher, message)
+
+    def _publish_warning(self, message: str) -> None:
+        self._publish_message(self.warning_publisher, message)
+
+    def _publish_error(self, message: str) -> None:
+        self._publish_message(self.error_publisher, message)
+
+    def _ik_failure(self, command: str, message: str) -> None:
+        text = f"{command} IK failed: {message}"
+        self._publish_error(text)
+        self.node.get_logger().error(f"{self.config.name} {text}")
+        changed, state_error = self._operating_state.command("disable")
+        if changed:
+            self._publish_operating_state(self.node.get_clock().now().to_msg())
+            self._publish_info("state changed to DISABLED after IK failure")
+        elif state_error:
+            self._publish_warning(f"could not disable after IK failure: {state_error}")
 
     def set_cartesian_reference(self, reference: CrtkComponent, frame_id: str) -> None:
         """Use a moving ECM pose as the PSM Cartesian reference frame.
@@ -236,7 +267,7 @@ class CrtkRosComponent:
         frame derived from ECM optical FK. Joint topics remain local to the
         PSM and are unaffected.
         """
-        if self.config.type != "psm":
+        if self.config.type != "PSM":
             return
         self._cartesian_reference = reference
         self._cartesian_reference_frame = str(frame_id)
@@ -301,6 +332,10 @@ class CrtkRosComponent:
             return False
         value = float(position)
         if not self._jaw_lower <= value <= self._jaw_upper:
+            self._publish_warning(
+                f"rejected jaw position {value}: "
+                f"expected [{self._jaw_lower}, {self._jaw_upper}] radians"
+            )
             self.node.get_logger().warning(
                 f"{self.config.name} rejected jaw position {value}: "
                 f"expected [{self._jaw_lower}, {self._jaw_upper}] radians"
@@ -323,6 +358,7 @@ class CrtkRosComponent:
         """Apply a state command through the same path as ROS state_command."""
         success, error = self._operating_state.command(command)
         if not success:
+            self._publish_warning(f"rejected GUI state command {command!r}: {error}")
             self.node.get_logger().warning(
                 f"{self.config.name} rejected GUI state command {command!r}: {error}"
             )
@@ -330,6 +366,7 @@ class CrtkRosComponent:
         if self._operating_state.state in (CrtkOperatingState.DISABLED, CrtkOperatingState.FAULT):
             self.model.move_jp(self.model.measured_js().position)
         self._publish_operating_state(self.node.get_clock().now().to_msg())
+        self._publish_info(f"state is now {self._operating_state.state}")
         return True
 
     def command_joint_position(self, position: Iterable[float]) -> bool:
@@ -346,6 +383,7 @@ class CrtkRosComponent:
     def _state_command_callback(self, message) -> None:
         success, error = self._operating_state.command(message.string)
         if not success:
+            self._publish_warning(f"rejected state_command {message.string!r}: {error}")
             self.node.get_logger().warning(
                 f"{self.config.name} rejected state_command {message.string!r}: {error}"
             )
@@ -353,9 +391,9 @@ class CrtkRosComponent:
         if self._operating_state.state in (CrtkOperatingState.DISABLED, CrtkOperatingState.FAULT):
             self.model.move_jp(self.model.measured_js().position)
         self._publish_operating_state(self.node.get_clock().now().to_msg())
-        self.node.get_logger().info(
-            f"{self.config.name} state is now {self._operating_state.state}"
-        )
+        state_text = f"state is now {self._operating_state.state}"
+        self._publish_info(state_text)
+        self.node.get_logger().info(f"{self.config.name} {state_text}")
 
     def _jaw_servo_jp_callback(self, message) -> None:
         if not self._motion_allowed("jaw/servo_jp"):
@@ -413,8 +451,9 @@ class CrtkRosComponent:
                 self._pose_from_ros(_pose_from_ros(message), message.header.frame_id)
             )
             if not result.success:
-                self.node.get_logger().warning(f"{self.config.name} move_cp failed: {result.message}")
+                self._ik_failure("move_cp", result.message)
         except ValueError as error:
+            self._publish_warning(f"rejected move_cp: {error}")
             self.node.get_logger().warning(f"{self.config.name} rejected move_cp: {error}")
 
     def _servo_cp_callback(self, message) -> None:
@@ -425,8 +464,9 @@ class CrtkRosComponent:
                 self._pose_from_ros(_pose_from_ros(message), message.header.frame_id)
             )
             if not result.success:
-                self.node.get_logger().warning(f"{self.config.name} servo_cp failed: {result.message}")
+                self._ik_failure("servo_cp", result.message)
         except ValueError as error:
+            self._publish_warning(f"rejected servo_cp: {error}")
             self.node.get_logger().warning(f"{self.config.name} rejected servo_cp: {error}")
 
     def _publish_jaw_state(self, stamp) -> None:
@@ -514,7 +554,7 @@ class CrtkRosNode:
         if not config_path:
             raise ValueError("robot_config ROS parameter is required")
         config = load_robot_config(Path(config_path))
-        model = CrtkPSM(config) if config.type == "psm" else CrtkECM(config)
+        model = CrtkPSM(config) if config.type == "PSM" else CrtkECM(config)
         self.component = CrtkRosComponent(self._node, config, model)
         rate = self._node.get_parameter("update_rate_hz").value
         self._node.create_timer(1.0 / float(rate), self._update)

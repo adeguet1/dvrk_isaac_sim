@@ -74,6 +74,8 @@ state         crtk_msgs/StringStamped
 
 The current adapter publishes `measured_js`, `measured_cp`, `measured_cv`, `setpoint_js`, `operating_state`, and `state`, and subscribes to `move_jp`, `servo_jp`, `move_cp`, and `servo_cp`. Six-DOF PSM Cartesian commands use position-and-orientation IK. ECM Cartesian commands remain position-only because its four joints cannot generally satisfy a full six-axis pose. Both `move_cp` and `servo_cp` use `geometry_msgs/PoseStamped`, matching the dVRK ROS bridge and CRTK Python client.
 
+Each arm also publishes diagnostic events using `crtk_msgs/msg/StringStamped`: `/<arm>/info`, `/<arm>/warning`, and `/<arm>/error`. Initialization milestones and accepted operating-state changes are published on `info`; rejected commands are published on `warning`; IK failures are published on `error`. A Cartesian IK failure disables the arm and publishes the resulting operating-state event.
+
 ### Endoscope view
 
 The ECM publishes a rendered endoscope view through ROS 2 image transport:
@@ -86,7 +88,7 @@ The ECM publishes a rendered endoscope view through ROS 2 image transport:
 
 `/ECM/image_raw` is the raw-image base topic. `image_transport` may expose compressed or other transport variants without requiring changes to the simulator camera implementation. Topic names, encoding, and camera profile are configurable.
 
-The raw and JPEG-compressed image topics are published at the configured camera rate (default 30 Hz), independently of the simulation update rate. The image and camera-info messages use the same simulation timestamp and the configured ECM optical frame ID. Select `camera:=mono`, `camera:=stereo`, or `camera:=off` at launch. Stereo uses `/ECM/left/...` and `/ECM/right/...` topics.
+The raw and JPEG-compressed image topics are published at the configured camera rate (default 30 Hz), independently of the simulation update rate. The image and camera-info messages use the same simulation timestamp and the configured ECM optical frame ID. Set `scene.camera.mode` to `mono`, `stereo`, or `off` in the selected scene YAML. Stereo uses `/ECM/left/...` and `/ECM/right/...` topics.
 
 The current adapter also publishes state topics:
 

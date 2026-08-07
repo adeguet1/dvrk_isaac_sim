@@ -23,10 +23,14 @@ Full patient-cart CAD, dynamics, contact simulation, and hardware-runtime depend
 - [Design specification](docs/design.md)
 - [Frames and conventions](docs/frames.md)
 - [ROS 2 interface](docs/ros_interface.md)
-- [PSM configuration](config/PSM1.yaml)
+- [Shared PSM defaults](config/PSM.yaml)
+- [PSM1 configuration](config/PSM1.yaml)
 - [ECM configuration](config/ECM.yaml)
 - [Two-PSM scene](config/scenes/ECM_PSM1_PSM2.yaml)
 - [Three-PSM scene](config/scenes/ECM_PSM1_PSM2_PSM3.yaml)
+- [PSM1 + ECM example](config/scenes/PSM1_420006.yaml)
+- [PSM2 + ECM example](config/scenes/PSM2_420093.yaml)
+- [PSM3 + ECM example](config/scenes/PSM3_420006.yaml)
 - [Cart frame generator](scripts/generate_cart_frames.py)
 
 ## dVRK resources
@@ -54,17 +58,16 @@ export ISAAC_SIM_DIR=/path/to/isaac-sim
 
 source /opt/ros/jazzy/setup.bash
 source /path/to/isaac_sim_ws/install/setup.bash
-ros2 launch dvrk_isaac_sim run_sim.launch.py camera:=mono renderer:=MinimalRendering
+ros2 launch dvrk_isaac_sim run_sim.launch.py
 ```
 
 Start the full virtual cart with the default three PSMs and kinematic ECM, or select the two-PSM profile:
 
 ```bash
-ros2 launch dvrk_isaac_sim run_sim.launch.py camera:=stereo
-ros2 launch dvrk_isaac_sim run_sim.launch.py scene_config:=.../config/scenes/ECM_PSM1_PSM2.yaml camera:=mono
+ros2 launch dvrk_isaac_sim run_sim.launch.py config:=/path/to/my-dvrk-isaac.yaml scene:=PSM1_420006.yaml
 ```
 
-The default renderer is `MinimalRendering`, matching the Isaac Sim RTX Minimal viewport mode. In GUI mode, the `dVRK CRTK Monitor` window lists every configured arm, shows live state and measured joints in degrees/mm, and provides joint-target and operating-state controls. Use `renderer:=RaytracedLighting` if higher-fidelity rendering is desired. The simulator adds neutral lighting and a gray environment so dark instruments remain visible.
+The default renderer is `RaytracedLighting`, which provides a visible viewport on the supported Isaac Sim setup. Instruments, endoscopes, and camera settings are defined by each scene. In GUI mode, the `dVRK CRTK Monitor` window lists every configured arm, shows live state and measured joints in degrees/mm, and provides joint-target and operating-state controls. The simulator adds neutral lighting and a gray environment so dark instruments remain visible.
 
 The ECM has no mesh in the full-cart scene. Its kinematic optical frame drives the Isaac camera. Mono publishes `/ECM/image_raw` and `/ECM/camera_info`; stereo publishes `/ECM/left/...` and `/ECM/right/...`.
 ```

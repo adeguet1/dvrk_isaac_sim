@@ -6,6 +6,7 @@ from setuptools import find_packages, setup
 package_name = "dvrk_isaac_sim"
 local_isaac_config = Path("config/isaac_sim.yaml")
 config_files = [
+    "config/PSM.yaml",
     "config/PSM1.yaml",
     "config/PSM2.yaml",
     "config/PSM3.yaml",
@@ -25,8 +26,7 @@ setup(
             *config_files,
         ]),
         (f"share/{package_name}/config/scenes", [
-            "config/scenes/ECM_PSM1_PSM2.yaml",
-            "config/scenes/ECM_PSM1_PSM2_PSM3.yaml",
+            str(path) for path in sorted(Path("config/scenes").glob("*.yaml"))
         ]),
         (f"share/{package_name}/launch", ["launch/run_sim.launch.py"]),
         (f"share/{package_name}/scripts", [

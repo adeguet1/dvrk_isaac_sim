@@ -1,6 +1,6 @@
 robot:
   name: ECM
-  type: ecm
+  type: ECM
   model: Virtual/ECM.urdf.xacro
   parent_frame: world
   base_frame: ECM_base
@@ -49,18 +49,3 @@ robot:
   cartesian:
     reference_frame: world
     measured_frame: ECM_optical
-
-  camera:
-    enabled: true
-    frame: ECM_optical
-    topic: image_raw
-    camera_info_topic: camera_info
-    width: 1280
-    height: 720
-    horizontal_fov_deg: 60.0
-    near_clip_m: 0.01
-    far_clip_m: 10.0
-    encoding: rgba8
-    baseline_m: 0.006
-    publish_rate_hz: 30.0
-    jpeg_quality: 85

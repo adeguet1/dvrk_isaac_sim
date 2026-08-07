@@ -46,13 +46,17 @@ class IsaacCameraPublisher:
     any ECM mesh, so the ECM can remain a kinematic-only component.
     """
 
-    def __init__(self, node: Any, config: RobotConfig, mode: str) -> None:
+    def __init__(self, node: Any, config: RobotConfig, mode: str,
+                 scene_camera: dict[str, Any] | None = None) -> None:
         if mode not in {"mono", "stereo"}:
             raise ValueError(f"unsupported camera mode: {mode}")
         from isaacsim.sensors.camera import Camera
         from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 
-        camera_config = config.raw.get("robot", {}).get("camera", {})
+        camera_config = dict(config.raw.get("robot", {}).get("camera", {}))
+        camera_config.update(scene_camera or {})
+        camera_config.pop("mode", None)
+        camera_config.pop("owner", None)
         self.node = node
         self.mode = mode
         self.frame_id = str(camera_config.get("frame", config.tool_frame))
