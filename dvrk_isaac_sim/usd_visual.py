@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 
-class CrtkUsdVisual:
+class CRTKUSDVisual:
     """Apply measured joint positions to a referenced virtual dVRK asset."""
 
     def __init__(self, component_name: str):

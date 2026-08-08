@@ -2,175 +2,35 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 
-from .config import RobotConfig, load_robot_config
-from .kinematics import CrtkECM, CrtkPSM, CrtkComponent, Pose
+from .config import RobotConfig
+from .kinematics import CRTKECM, CRTKPSM, CRTKComponent, Pose
 
 
-# Isaac's world-camera axes are +X forward, +Y left, +Z up.  dVRK
-# teleoperation uses X left, Y up, Z away from the operator.  This maps
-# dVRK view coordinates into the ECM optical/camera coordinates.
-_VIEW_TO_OPTICAL_ROTATION = np.array([
-    [0.0, 0.0, 1.0],
-    [1.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0],
-])
+from .cartesian_frames import (
+    _VIEW_TO_OPTICAL_ROTATION,
+    _compose_pose,
+    _inverse_pose,
+    _quaternion_matrix_xyzw,
+    _relative_pose,
+    _relative_twist,
+    _view_pose_from_optical,
+)
+from .ros_messages import _pose_from_ros, _quaternion_xyzw
+from .command_validation import joint_positions_from_message, jaw_position_from_message
+from .ros_qos import transient_local_event_qos
+from .operating_state import CRTKOperatingState
 
 
-def _compose_pose(first: Pose, second: Pose) -> Pose:
-    """Compose two poses represented as rotation/translation matrices."""
-    return Pose(
-        first.position + first.orientation @ second.position,
-        first.orientation @ second.orientation,
-    )
-
-
-def _inverse_pose(pose: Pose) -> Pose:
-    """Return the inverse of a rigid pose."""
-    rotation = pose.orientation.T
-    return Pose(-rotation @ pose.position, rotation)
-
-
-def _relative_pose(pose: Pose, reference: Pose) -> Pose:
-    """Express ``pose`` in the coordinate frame represented by ``reference``."""
-    return _compose_pose(_inverse_pose(reference), pose)
-
-
-def _view_pose_from_optical(optical_pose: Pose) -> Pose:
-    """Return the dVRK view pose derived from the current ECM optical FK."""
-    return _compose_pose(
-        optical_pose, Pose(np.zeros(3), _VIEW_TO_OPTICAL_ROTATION)
-    )
-
-
-def _quaternion_matrix_xyzw(quaternion: np.ndarray) -> np.ndarray:
-    x, y, z, w = quaternion / np.linalg.norm(quaternion)
-    return np.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-    ])
-
-
-def _relative_twist(pose: Pose, twist, reference: Pose, reference_twist) -> tuple[np.ndarray, np.ndarray]:
-    """Express a world twist in a moving reference frame."""
-    delta = pose.position - reference.position
-    linear = twist.linear - reference_twist.linear - np.cross(reference_twist.angular, delta)
-    angular = twist.angular - reference_twist.angular
-    rotation = reference.orientation.T
-    return rotation @ linear, rotation @ angular
-
-
-def _quaternion_xyzw(rotation: np.ndarray) -> tuple[float, float, float, float]:
-    """Convert a rotation matrix to an ROS-order quaternion."""
-    trace = float(np.trace(rotation))
-    if trace > 0.0:
-        scale = 2.0 * np.sqrt(trace + 1.0)
-        w = 0.25 * scale
-        x = (rotation[2, 1] - rotation[1, 2]) / scale
-        y = (rotation[0, 2] - rotation[2, 0]) / scale
-        z = (rotation[1, 0] - rotation[0, 1]) / scale
-    elif rotation[0, 0] > rotation[1, 1] and rotation[0, 0] > rotation[2, 2]:
-        scale = 2.0 * np.sqrt(1.0 + rotation[0, 0] - rotation[1, 1] - rotation[2, 2])
-        w = (rotation[2, 1] - rotation[1, 2]) / scale
-        x = 0.25 * scale
-        y = (rotation[0, 1] + rotation[1, 0]) / scale
-        z = (rotation[0, 2] + rotation[2, 0]) / scale
-    elif rotation[1, 1] > rotation[2, 2]:
-        scale = 2.0 * np.sqrt(1.0 + rotation[1, 1] - rotation[0, 0] - rotation[2, 2])
-        w = (rotation[0, 2] - rotation[2, 0]) / scale
-        x = (rotation[0, 1] + rotation[1, 0]) / scale
-        y = 0.25 * scale
-        z = (rotation[1, 2] + rotation[2, 1]) / scale
-    else:
-        scale = 2.0 * np.sqrt(1.0 + rotation[2, 2] - rotation[0, 0] - rotation[1, 1])
-        w = (rotation[1, 0] - rotation[0, 1]) / scale
-        x = (rotation[0, 2] + rotation[2, 0]) / scale
-        y = (rotation[1, 2] + rotation[2, 1]) / scale
-        z = 0.25 * scale
-    result = np.asarray([x, y, z, w], dtype=float)
-    result /= np.linalg.norm(result)
-    return tuple(float(value) for value in result)
-
-
-def _pose_from_ros(message) -> Pose:
-    quaternion = np.array([
-        message.pose.orientation.x,
-        message.pose.orientation.y,
-        message.pose.orientation.z,
-        message.pose.orientation.w,
-    ], dtype=float)
-    x, y, z, w = quaternion / np.linalg.norm(quaternion)
-    orientation = np.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-    ])
-    return Pose(
-        np.array([message.pose.position.x, message.pose.position.y, message.pose.position.z], dtype=float),
-        orientation,
-    )
-
-
-class CrtkOperatingState:
-    """Small, deterministic state machine for the CRTK operating-state API."""
-
-    DISABLED = "DISABLED"
-    ENABLED = "ENABLED"
-    PAUSED = "PAUSED"
-    FAULT = "FAULT"
-
-    def __init__(self, initial_state: str = DISABLED) -> None:
-        self.state = initial_state
-        self.is_homed = True
-
-    @property
-    def accepts_motion(self) -> bool:
-        return self.state == self.ENABLED
-
-    def command(self, command: str) -> tuple[bool, str]:
-        """Apply a CRTK ``state_command`` and return success and an error."""
-        command = str(command).strip().lower()
-        if command == "enable":
-            if self.state == self.FAULT:
-                return False, "cannot enable while in FAULT; issue clear_fault first"
-            self.state = self.ENABLED
-        elif command == "disable":
-            self.state = self.DISABLED
-        elif command == "pause":
-            if self.state != self.ENABLED:
-                return False, f"cannot pause from {self.state}"
-            self.state = self.PAUSED
-        elif command == "resume":
-            if self.state != self.PAUSED:
-                return False, f"cannot resume from {self.state}"
-            self.state = self.ENABLED
-        elif command == "home":
-            self.is_homed = True
-        elif command == "unhome":
-            self.is_homed = False
-        elif command == "fault":
-            self.state = self.FAULT
-        elif command in ("clear_fault", "reset"):
-            if self.state != self.FAULT:
-                return False, f"cannot clear fault from {self.state}"
-            self.state = self.DISABLED
-        else:
-            return False, f"unknown state command {command!r}"
-        return True, ""
-
-
-class CrtkRosComponent:
+class CRTKROSComponent:
     """ROS 2 adapter exposing CRTK topics for one kinematic component."""
 
-    def __init__(self, node, config: RobotConfig, model: CrtkComponent):
+    def __init__(self, node, config: RobotConfig, model: CRTKComponent):
         from crtk_msgs.msg import OperatingState, StringStamped
         from geometry_msgs.msg import PoseStamped, TwistStamped
-        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from sensor_msgs.msg import JointState
 
         self.node = node
@@ -181,8 +41,8 @@ class CrtkRosComponent:
         self._TwistStamped = TwistStamped
         self._OperatingState = OperatingState
         self._StringStamped = StringStamped
-        initial_state = CrtkOperatingState.ENABLED
-        self._operating_state = CrtkOperatingState(initial_state)
+        initial_state = CRTKOperatingState.ENABLED
+        self._operating_state = CRTKOperatingState(initial_state)
         self._has_jaw = config.type == "PSM"
         jaw_config = config.raw.get("robot", {}).get("jaw", {})
         self._jaw_lower = float(jaw_config.get("lower", -0.349066))
@@ -190,7 +50,7 @@ class CrtkRosComponent:
         self._jaw_position = 0.0
         self._jaw_velocity = 0.0
         self._frame_id = str(config.raw.get("robot", {}).get("cartesian", {}).get("reference_frame", config.parent_frame))
-        self._cartesian_reference: CrtkComponent | None = None
+        self._cartesian_reference: CRTKComponent | None = None
         self._cartesian_reference_frame = self._frame_id
         # Static world pose of this PSM base frame. The ECM view pose is
         # dynamic and is evaluated from ECM FK for every conversion.
@@ -198,9 +58,7 @@ class CrtkRosComponent:
             config.base_position.copy(),
             _quaternion_matrix_xyzw(config.base_orientation_xyzw),
         )
-        state_qos = QoSProfile(depth=1)
-        state_qos.reliability = ReliabilityPolicy.RELIABLE
-        state_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        state_qos = transient_local_event_qos()
 
         self.measured_js_publisher = node.create_publisher(JointState, "measured_js", 10)
         self.measured_cp_publisher = node.create_publisher(PoseStamped, "measured_cp", 10)
@@ -260,7 +118,7 @@ class CrtkRosComponent:
         elif state_error:
             self._publish_warning(f"could not disable after IK failure: {state_error}")
 
-    def set_cartesian_reference(self, reference: CrtkComponent, frame_id: str) -> None:
+    def set_cartesian_reference(self, reference: CRTKComponent, frame_id: str) -> None:
         """Use a moving ECM pose as the PSM Cartesian reference frame.
 
         PSM Cartesian ROS topics are expressed in the current dVRK view
@@ -363,7 +221,7 @@ class CrtkRosComponent:
                 f"{self.config.name} rejected GUI state command {command!r}: {error}"
             )
             return False
-        if self._operating_state.state in (CrtkOperatingState.DISABLED, CrtkOperatingState.FAULT):
+        if self._operating_state.state in (CRTKOperatingState.DISABLED, CRTKOperatingState.FAULT):
             self.model.move_jp(self.model.measured_js().position)
         self._publish_operating_state(self.node.get_clock().now().to_msg())
         self._publish_info(f"state is now {self._operating_state.state}")
@@ -388,7 +246,7 @@ class CrtkRosComponent:
                 f"{self.config.name} rejected state_command {message.string!r}: {error}"
             )
             return
-        if self._operating_state.state in (CrtkOperatingState.DISABLED, CrtkOperatingState.FAULT):
+        if self._operating_state.state in (CRTKOperatingState.DISABLED, CRTKOperatingState.FAULT):
             self.model.move_jp(self.model.measured_js().position)
         self._publish_operating_state(self.node.get_clock().now().to_msg())
         state_text = f"state is now {self._operating_state.state}"
@@ -398,12 +256,14 @@ class CrtkRosComponent:
     def _jaw_servo_jp_callback(self, message) -> None:
         if not self._motion_allowed("jaw/servo_jp"):
             return
-        if not message.position:
-            self.node.get_logger().warning(f"{self.config.name} rejected jaw/servo_jp: no position")
+        try:
+            position = jaw_position_from_message(message)
+        except ValueError as error:
+            self.node.get_logger().warning(f"{self.config.name} rejected jaw/servo_jp: {error}")
             return
         # The virtual instrument has no jaw dynamics. Keep a single logical jaw
         # position and report it immediately as both measured and setpoint state.
-        self.command_jaw_position(float(message.position[0]))
+        self.command_jaw_position(position)
 
     def _motion_allowed(self, command: str) -> bool:
         if self._operating_state.accepts_motion:
@@ -414,18 +274,9 @@ class CrtkRosComponent:
         return False
 
     def _positions_from_message(self, message) -> np.ndarray:
-        if not message.position:
-            raise ValueError("joint command has no position values")
-        values = np.asarray(message.position, dtype=float)
-        expected_names = tuple(joint.name for joint in self.config.joints)
-        if message.name:
-            names = tuple(message.name)
-            if set(names) != set(expected_names):
-                raise ValueError(f"joint command names {names} do not match {expected_names}")
-            values = np.asarray([message.position[names.index(name)] for name in expected_names], dtype=float)
-        if values.shape != (len(expected_names),):
-            raise ValueError("joint command has the wrong number of positions")
-        return values
+        return joint_positions_from_message(
+            message, (joint.name for joint in self.config.joints)
+        )
 
     def _move_jp_callback(self, message) -> None:
         if not self._motion_allowed("move_jp"):
@@ -535,55 +386,3 @@ class CrtkRosComponent:
         setpoint.position = self.model.goal_js().position.tolist()
         self.setpoint_js_publisher.publish(setpoint)
         self._publish_jaw_state(stamp)
-
-
-class CrtkRosNode:
-    """ROS 2 node for one configured PSM or ECM."""
-
-    def __init__(self):
-        import rclpy
-        from rclpy.node import Node
-
-        class _Node(Node):
-            pass
-
-        self._node = _Node("dvrk_isaac_sim")
-        self._node.declare_parameter("robot_config", "")
-        self._node.declare_parameter("update_rate_hz", 120.0)
-        config_path = self._node.get_parameter("robot_config").get_parameter_value().string_value
-        if not config_path:
-            raise ValueError("robot_config ROS parameter is required")
-        config = load_robot_config(Path(config_path))
-        model = CrtkPSM(config) if config.type == "PSM" else CrtkECM(config)
-        self.component = CrtkRosComponent(self._node, config, model)
-        rate = self._node.get_parameter("update_rate_hz").value
-        self._node.create_timer(1.0 / float(rate), self._update)
-        self._last_time = self._node.get_clock().now()
-
-    def _update(self) -> None:
-        now = self._node.get_clock().now()
-        dt = (now - self._last_time).nanoseconds * 1e-9
-        self._last_time = now
-        self.component.model.step(max(0.0, dt))
-        self.component.publish(now.to_msg())
-
-    def spin(self) -> None:
-        import rclpy
-        rclpy.spin(self._node)
-
-    def destroy(self) -> None:
-        self._node.destroy_node()
-
-
-def main() -> None:
-    import rclpy
-
-    rclpy.init()
-    node = None
-    try:
-        node = CrtkRosNode()
-        node.spin()
-    finally:
-        if node is not None:
-            node.destroy()
-        rclpy.shutdown()

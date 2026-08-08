@@ -78,7 +78,7 @@ def _transform(rotation: np.ndarray, translation: Iterable[float]) -> np.ndarray
     return result
 
 
-class CrtkComponent:
+class CRTKComponent:
     """Backend-independent component exposing CRTK-style state and commands."""
 
     def __init__(self, config: RobotConfig, adaptor_offset: float, adaptor_rpy: tuple[float, float, float]):
@@ -259,12 +259,12 @@ class CrtkComponent:
         return result
 
 
-class CrtkPSM(CrtkComponent):
+class CRTKPSM(CRTKComponent):
     """Six-DOF virtual PSM: RCM plus roll, wrist pitch, and wrist yaw."""
 
     def __init__(self, config: RobotConfig):
         if config.type != "PSM" or len(config.joints) != 6:
-            raise ValueError("CrtkPSM requires six configured joints")
+            raise ValueError("CRTKPSM requires six configured joints")
         super().__init__(config, adaptor_offset=0.4826, adaptor_rpy=(math.pi, 0.0, -math.pi / 2.0))
 
     def _make_joint_origins(self) -> tuple[tuple[np.ndarray, tuple[float, float, float]], ...]:
@@ -289,12 +289,12 @@ class CrtkPSM(CrtkComponent):
         )
 
 
-class CrtkECM(CrtkComponent):
+class CRTKECM(CRTKComponent):
     """Four-DOF virtual ECM: yaw, pitch, insertion, and roll."""
 
     def __init__(self, config: RobotConfig):
         if config.type != "ECM" or len(config.joints) != 4:
-            raise ValueError("CrtkECM requires a four-joint ECM configuration")
+            raise ValueError("CRTKECM requires a four-joint ECM configuration")
         super().__init__(config, adaptor_offset=0.3829, adaptor_rpy=(math.pi, 0.0, math.pi / 2.0))
 
     def _joint_axes(self) -> tuple[np.ndarray, ...]:

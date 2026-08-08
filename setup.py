@@ -33,6 +33,7 @@ setup(
             "scripts/run_sim.py",
             "scripts/convert_dvrk_model.py",
             "scripts/generate_cart_frames.py",
+            "scripts/validate_config.py",
         ]),
     ],
     install_requires=["setuptools", "numpy", "PyYAML"],
@@ -40,7 +41,7 @@ setup(
     entry_points={
         "console_scripts": [
             "dvrk_isaac_sim_kinematics = dvrk_isaac_sim.kinematics:main",
-            "dvrk_isaac_sim_ros = dvrk_isaac_sim.ros_interface:main",
+            "dvrk_isaac_sim_ros = dvrk_isaac_sim.ros_node:main",
         ],
     },
 )

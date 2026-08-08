@@ -6,7 +6,7 @@ import math
 from typing import Any
 
 
-class IsaacCrtkWindow:
+class IsaacCRTKWindow:
     """Live CRTK monitor and joint/state command window.
 
     This module is imported only for non-headless Isaac Sim runs.  It uses

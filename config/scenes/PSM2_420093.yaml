@@ -23,3 +23,4 @@ scene:
     - config: config/PSM2.yaml
       instrument: "420093"
     - config: config/ECM.yaml
+      endoscope: "Si_straight"

@@ -48,10 +48,10 @@ operating_state   operating-state interface
 Internal classes should be component-oriented rather than Isaac-oriented. Preferred conceptual names are:
 
 ```text
-CrtkComponent
-CrtkArm
-CrtkPSM
-CrtkECM
+CRTKComponent
+CRTKArm
+CRTKPSM
+CRTKECM
 JointStateInterface
 CartesianPoseInterface
 ```

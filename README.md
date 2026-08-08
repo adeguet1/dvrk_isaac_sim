@@ -91,3 +91,42 @@ ros2 run dvrk_isaac_sim dvrk_isaac_sim_ros \
 The ROS 2 interface has been tested with the dVRK system configuration using an old Logitech 3Dconnexion SpaceBall 5000 as the MTMR input and the simulated `/PSM1` as the puppet. The corresponding dVRK configuration is `system-MTMR-3Dconnexion-PSM1_from_ROS.json` in `saw3Dconnexion/share`.
 
 Start Isaac Sim first, source the Isaac Sim ROS 2 workspace, and launch the PSM/ECM simulation. Then start the dVRK system with the SpaceBall configuration. The PSM should report `ENABLED` and `is_homed=true`; MTMR motion should teleoperate the simulated PSM Cartesian pose and jaw.
+
+## Testing
+
+The current automated tests are pure-Python tests for configuration, scene
+loading, kinematics, frame conversion, and operating-state behavior. Run them
+from the package directory after installing the ROS 2 workspace dependencies:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source /path/to/isaac_sim_ws/install/setup.bash
+cd /path/to/isaac_sim_ws/src/dvrk_isaac_sim
+python3.12 -m pytest -q
+```
+
+To also verify ROS 2 packaging and installation:
+
+```bash
+cd /path/to/isaac_sim_ws
+colcon build --symlink-install --packages-select dvrk_isaac_sim
+```
+
+Isaac Sim runtime and ROS graph integration tests currently require a working
+Isaac Sim installation and are run manually with `ros2 launch`.
+
+The repository also provides a configuration-only validation command. From the
+workspace root:
+
+```bash
+cd /path/to/isaac_sim_ws
+python3.12 src/dvrk_isaac_sim/scripts/validate_config.py
+```
+
+Or, from the package directory:
+
+```bash
+python3.12 scripts/validate_config.py
+```
+
+It validates the simulator config and every scene without starting Isaac Sim.

@@ -1,0 +1,215 @@
+"""Scene and simulator-configuration loading independent of Isaac Sim."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from .config import load_robot_document
+
+
+@dataclass(frozen=True)
+class SimulatorConfig:
+    path: Path
+    isaac_sim_dir: Path | None
+    generated_dir: Path
+    renderer: str
+    headless: bool
+    duration: float
+    ros_distro: str
+    rmw_implementation: str
+    scene: str | None
+
+
+@dataclass(frozen=True)
+class SceneCamera:
+    mode: str = "mono"
+    owner: str = "ECM"
+    settings: dict[str, Any] | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return dict(self.settings or {})
+
+
+@dataclass(frozen=True)
+class SceneRobot:
+    name: str
+    type: str
+    config_path: Path
+    frame: dict[str, Any]
+    instrument: str | None = None
+    endoscope: str | None = None
+
+
+@dataclass(frozen=True)
+class SceneConfig:
+    path: Path
+    name: str
+    base_frame_provider: str
+    frames: dict[str, dict[str, Any]]
+    robots: tuple[SceneRobot, ...]
+    camera: SceneCamera
+
+
+def load_yaml_mapping(path: str | Path) -> dict[str, Any]:
+    source = Path(path).expanduser().resolve()
+    with source.open("r", encoding="utf-8") as stream:
+        document = yaml.safe_load(stream) or {}
+    if not isinstance(document, dict):
+        raise ValueError(f"{source}: expected a YAML mapping")
+    return document
+
+
+def load_simulator_config(path: str | Path) -> SimulatorConfig:
+    """Load and validate simulator-level settings from a config YAML."""
+    source = Path(path).expanduser().resolve()
+    document = load_yaml_mapping(source)
+
+    def value(name: str, default=None):
+        return document.get(name, default)
+
+    def path_value(name: str, default=None) -> Path | None:
+        raw = value(name, default)
+        if raw in (None, ""):
+            return None
+        selected = Path(str(raw)).expanduser()
+        return selected if selected.is_absolute() else (source.parent / selected).resolve()
+
+    generated_dir = path_value("generated_dir", source.parent.parent / ".generated" / "isaacsim-6.0")
+    if generated_dir is None:
+        raise ValueError(f"{source}: generated_dir is required")
+    renderer = str(value("renderer", "RaytracedLighting"))
+    if renderer not in {"RaytracedLighting", "RealTimePathTracing", "PathTracing"}:
+        raise ValueError(f"{source}: unsupported renderer {renderer}")
+    duration = float(value("duration", 0.0))
+    if duration < 0.0:
+        raise ValueError(f"{source}: duration cannot be negative")
+    return SimulatorConfig(
+        path=source,
+        isaac_sim_dir=path_value("isaac_sim_dir"),
+        generated_dir=generated_dir,
+        renderer=renderer,
+        headless=bool(value("headless", False)),
+        duration=duration,
+        ros_distro=str(value("ros_distro", "jazzy")),
+        rmw_implementation=str(value("rmw_implementation", "rmw_fastrtps_cpp")),
+        scene=str(value("scene")) if value("scene") not in (None, "") else None,
+    )
+
+
+def available_scene_paths(config_path: str | Path) -> tuple[Path, ...]:
+    """Return scene YAMLs next to a simulator config file."""
+    directory = Path(config_path).expanduser().resolve().parent / "scenes"
+    return tuple(sorted(directory.glob("*.yaml")))
+
+
+def available_scene_names(config_path: str | Path) -> tuple[str, ...]:
+    return tuple(path.name for path in available_scene_paths(config_path))
+
+
+def resolve_scene_path(config_path: str | Path, selection: str | Path | None) -> Path:
+    """Resolve a scene filename, relative path, or absolute path.
+
+    Bare filenames are searched below the config file's ``scenes`` directory.
+    """
+    config = Path(config_path).expanduser().resolve()
+    if selection in (None, ""):
+        names = "\n  ".join(available_scene_names(config)) or "(none)"
+        raise ValueError(
+            f"No scene selected. Choose --scene or set scene in {config}.\n"
+            f"Available scenes:\n  {names}"
+        )
+    selected = Path(str(selection)).expanduser()
+    if selected.is_absolute():
+        resolved = selected.resolve()
+    else:
+        resolved = (config.parent / selected).resolve()
+        if not resolved.is_file() and selected.parent == Path("."):
+            resolved = (config.parent / "scenes" / selected).resolve()
+        if not resolved.suffix:
+            resolved = resolved.with_suffix(".yaml")
+    if not resolved.is_file():
+        names = "\n  ".join(available_scene_names(config)) or "(none)"
+        raise FileNotFoundError(
+            f"Scene configuration not found: {resolved}\nAvailable scenes:\n  {names}"
+        )
+    return resolved
+
+
+def _robot_config_path(scene_path: Path, configured: Any) -> Path:
+    if isinstance(configured, dict):
+        configured = configured.get("config")
+    if not configured:
+        raise ValueError(f"{scene_path}: scene robot is missing config")
+    path = Path(str(configured)).expanduser()
+    if not path.is_absolute():
+        path = scene_path.parent.parent.parent / path
+    return path.resolve()
+
+
+def load_scene(scene_path: str | Path) -> SceneConfig:
+    """Load, resolve, and validate one scene document."""
+    source = Path(scene_path).expanduser().resolve()
+    document = load_yaml_mapping(source)
+    scene = document.get("scene")
+    if not isinstance(scene, dict):
+        raise ValueError(f"{source}: expected a top-level scene mapping")
+
+    frames = scene.get("frames", {}) or {}
+    if not isinstance(frames, dict):
+        raise ValueError(f"{source}: scene.frames must be a mapping")
+
+    camera_document = scene.get("camera", {}) or {}
+    if not isinstance(camera_document, dict):
+        raise ValueError(f"{source}: scene.camera must be a mapping")
+    camera = SceneCamera(
+        mode=str(camera_document.get("mode", "mono")),
+        owner=str(camera_document.get("owner", "ECM")),
+        settings=dict(camera_document),
+    )
+    if camera.mode not in {"off", "mono", "stereo"}:
+        raise ValueError(f"{source}: camera.mode must be off, mono, or stereo")
+    if camera.owner != "ECM":
+        raise ValueError(f"{source}: only ECM is supported as the camera owner")
+
+    entries = []
+    names = set()
+    for configured in scene.get("robots", []) or []:
+        if not isinstance(configured, dict):
+            raise ValueError(f"{source}: each scene robot must be a mapping")
+        options = configured
+        config_path = _robot_config_path(source, configured)
+        robot_document = load_robot_document(config_path)
+        robot = robot_document.get("robot", {})
+        name = str(robot.get("name", ""))
+        robot_type = str(robot.get("type", "")).upper()
+        if not name or robot_type not in {"PSM", "ECM"}:
+            raise ValueError(f"{source}: invalid robot configuration {config_path}")
+        if name in names:
+            raise ValueError(f"{source}: duplicate robot name {name}")
+        names.add(name)
+        frame = frames.get(name, {}) or {}
+        if not isinstance(frame, dict):
+            raise ValueError(f"{source}: frame for {name} must be a mapping")
+        entries.append(SceneRobot(
+            name=name,
+            type=robot_type,
+            config_path=config_path,
+            frame=dict(frame),
+            instrument=str(options["instrument"]) if "instrument" in options else None,
+            endoscope=str(options["endoscope"]) if "endoscope" in options else None,
+        ))
+    if not entries:
+        raise ValueError(f"{source}: scene has no robots")
+
+    return SceneConfig(
+        path=source,
+        name=str(scene.get("name", source.stem)),
+        base_frame_provider=str(scene.get("base_frame_provider", "yaml")),
+        frames={str(name): dict(frame) for name, frame in frames.items()},
+        robots=tuple(entries),
+        camera=camera,
+    )

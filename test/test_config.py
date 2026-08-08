@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 
 from dvrk_isaac_sim.config import load_robot_config
+from dvrk_isaac_sim.scene import available_scene_names, load_scene, load_simulator_config, resolve_scene_path
 
 
 ROOT = Path(__file__).parents[1]
@@ -29,3 +30,24 @@ def test_psm_instances_include_shared_defaults():
         assert len(config.joints) == 6
         assert all(joint.velocity == (0.4 if joint.name == "insertion" else 1.0)
                    for joint in config.joints)
+
+
+def test_scene_resolution_and_scene_owned_variants():
+    config_path = ROOT / "config" / "isaac_sim.yaml"
+    assert "PSM2_420093.yaml" in available_scene_names(config_path)
+    scene_path = resolve_scene_path(config_path, "PSM2_420093.yaml")
+    scene = load_scene(scene_path)
+    assert scene.camera.mode == "mono"
+    assert [(robot.name, robot.instrument, robot.endoscope) for robot in scene.robots] == [
+        ("PSM2", "420093", None),
+        ("ECM", None, "Si_straight"),
+    ]
+    assert resolve_scene_path(config_path, scene_path) == scene_path
+
+
+def test_simulator_config_is_typed_and_scene_free_by_default():
+    config = load_simulator_config(ROOT / "config" / "isaac_sim.yaml")
+    assert config.renderer == "RaytracedLighting"
+    assert config.headless is False
+    assert config.scene is None
+    assert config.generated_dir.is_absolute()

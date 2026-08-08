@@ -20,13 +20,12 @@ from pathlib import Path
 import sys
 
 import numpy as np
-import yaml
 
 # Permit running the source script directly with Isaac Sim's Python.
 _package_root = Path(__file__).resolve().parents[1]
 if str(_package_root) not in sys.path:
     sys.path.insert(0, str(_package_root))
-from dvrk_isaac_sim.config import load_robot_document
+from dvrk_isaac_sim.scene import load_scene, load_simulator_config, resolve_scene_path, SceneRobot
 
 
 def _arguments() -> argparse.Namespace:
@@ -43,47 +42,19 @@ def _arguments() -> argparse.Namespace:
     args = parser.parse_args()
 
     config_path = args.config.expanduser().resolve()
-    with config_path.open("r", encoding="utf-8") as stream:
-        settings = yaml.safe_load(stream) or {}
-    if not isinstance(settings, dict):
-        raise ValueError(f"{config_path}: expected a YAML mapping")
-
-    def setting(name: str, default=None):
-        return settings.get(name, default)
-
-    def path_setting(name: str, default=None):
-        value = setting(name, default)
-        if value in (None, ""):
-            return None
-        value = Path(value).expanduser()
-        return value if value.is_absolute() else (config_path.parent / value).resolve()
-
+    simulator_config = load_simulator_config(config_path)
     args.config = config_path
-    scene_value = args.scene if args.scene is not None else setting("scene")
-    scenes_dir = config_path.parent / "scenes"
-    if scene_value in (None, ""):
-        available = sorted(scenes_dir.glob("*.yaml"))
-        names = "\n  ".join(path.name for path in available) or "(none)"
-        raise ValueError(f"No scene selected. Choose --scene or set scene in {config_path}.\nAvailable scenes:\n  {names}")
-    scene_path = Path(str(scene_value)).expanduser()
-    if not scene_path.is_absolute():
-        candidate = (config_path.parent / scene_path).resolve()
-        if not candidate.is_file() and scene_path.parent == Path("."):
-            candidate = (scenes_dir / scene_path).resolve()
-        if not candidate.suffix:
-            candidate = candidate.with_suffix(".yaml")
-        scene_path = candidate
-    args.scene_config = scene_path.resolve()
-    args.generated_dir = path_setting("generated_dir", root.parent.parent / ".generated" / "isaacsim-6.0")
-    args.renderer = str(setting("renderer", "RaytracedLighting"))
-    args.headless = bool(setting("headless", False)) if args.headless is None else args.headless
-    args.duration = float(setting("duration", 0.0)) if args.duration is None else args.duration
-    scene_document = yaml.safe_load(args.scene_config.read_text(encoding="utf-8")) or {}
-    scene_settings = scene_document.get("scene", scene_document)
-    args.scene_camera = scene_settings.get("camera", {}) or {}
-    args.camera = str(args.scene_camera.get("mode", "mono"))
-    if args.camera not in {"off", "mono", "stereo"}:
-        raise ValueError(f"{args.scene_config}: camera.mode must be off, mono, or stereo")
+    args.simulator_config = simulator_config
+    args.scene_config = resolve_scene_path(
+        config_path, args.scene if args.scene is not None else simulator_config.scene
+    )
+    args.scene_model = load_scene(args.scene_config)
+    args.generated_dir = simulator_config.generated_dir
+    args.renderer = simulator_config.renderer
+    args.headless = simulator_config.headless if args.headless is None else args.headless
+    args.duration = simulator_config.duration if args.duration is None else args.duration
+    args.scene_camera = args.scene_model.camera.as_dict()
+    args.camera = args.scene_model.camera.mode
     if args.renderer not in {"RaytracedLighting", "RealTimePathTracing", "PathTracing"}:
         raise ValueError(f"{config_path}: unsupported renderer {args.renderer}")
     return args
@@ -146,36 +117,12 @@ def _ros_time(seconds: float):
     return result
 
 
-def _scene_entries(scene_path: Path, root: Path) -> list[dict]:
-    document = yaml.safe_load(scene_path.read_text(encoding="utf-8")) or {}
-    scene = document.get("scene", document)
-    frames = scene.get("frames", {})
-    entries = []
-    for configured in scene.get("robots", []):
-        options = configured if isinstance(configured, dict) else {}
-        configured_path = options.get("config", configured) if isinstance(configured, dict) else configured
-        config_path = Path(configured_path)
-        if not config_path.is_absolute():
-            config_path = scene_path.parent.parent.parent / config_path
-        config_path = config_path.resolve()
-        robot_document = load_robot_document(config_path)
-        name = str(robot_document["robot"]["name"])
-        frame = frames.get(name, {})
-        entries.append({"name": name, "config": config_path, "frame": frame,
-                        "instrument": options.get("instrument"),
-                        "endoscope": options.get("endoscope")})
-    if not entries:
-        raise ValueError(f"scene has no robots: {scene_path}")
-    return entries
+def _generated_variant(args: argparse.Namespace, entry: SceneRobot) -> tuple[Path, Path]:
+    variant = (entry.instrument or "420006" if entry.type == "PSM"
+               else entry.endoscope or "Si_straight")
+    asset_dir = args.generated_dir.expanduser().resolve() / f"{entry.name}_{variant}"
+    return asset_dir / entry.name / f"{entry.name}.usda", asset_dir / "kinematics.json"
 
-def _generated_variant(args: argparse.Namespace, entry: dict) -> tuple[Path, Path]:
-    robot = load_robot_document(entry["config"])["robot"]
-    name = entry["name"]
-    variant = (entry.get("instrument") or "420006"
-               if str(robot["type"]).upper() == "PSM"
-               else entry.get("endoscope") or "Si_straight")
-    asset_dir = args.generated_dir.expanduser().resolve() / f"{name}_{variant}"
-    return asset_dir / name / f"{name}.usda", asset_dir / "kinematics.json"
 
 def main() -> int:
     args = _arguments()
@@ -191,16 +138,14 @@ def main() -> int:
 
         enable_extension("isaacsim.ros2.bridge")
         simulation_app.update()
-        if not args.scene_config.is_file():
-            raise FileNotFoundError(f"Scene configuration not found: {args.scene_config}")
-        scene_entries = _scene_entries(args.scene_config, Path(__file__).resolve().parents[1])
+        scene_entries = args.scene_model.robots
         if scene_entries:
             for entry in scene_entries:
                 asset, _ = _generated_variant(args, entry)
-                robot_type = load_robot_document(entry["config"])["robot"]["type"].upper()
+                robot_type = entry.type
                 if robot_type == "PSM":
-                    frame = entry.get("frame", {})
-                    _reference_usd(asset, f"/World/{entry['name']}",
+                    frame = entry.frame
+                    _reference_usd(asset, f"/World/{entry.name}",
                                    frame.get("position"), frame.get("orientation_xyzw"))
         # The ECM is intentionally represented by kinematics and its camera
         # only; never add the endoscope/ECM mesh to the stage.
@@ -220,9 +165,9 @@ def main() -> int:
             sys.path.insert(0, str(package_root))
 
         from dvrk_isaac_sim.config import load_robot_config
-        from dvrk_isaac_sim.kinematics import CrtkECM, CrtkPSM
-        from dvrk_isaac_sim.ros_interface import CrtkRosComponent
-        from dvrk_isaac_sim.usd_visual import CrtkUsdVisual
+        from dvrk_isaac_sim.kinematics import CRTKECM, CRTKPSM
+        from dvrk_isaac_sim.ros_interface import CRTKROSComponent
+        from dvrk_isaac_sim.usd_visual import CRTKUSDVisual
 
         rclpy.init()
 
@@ -235,18 +180,18 @@ def main() -> int:
                 frame.get("position"), frame.get("orientation_xyzw")
             )
             if config.type == "PSM":
-                model = CrtkPSM(config)
+                model = CRTKPSM(config)
             elif config.type == "ECM":
-                model = CrtkECM(config)
+                model = CRTKECM(config)
             else:
                 raise ValueError(f"Unsupported robot type: {config.type}")
             node = Node(f"dvrk_isaac_sim_{config.name}", namespace=f"/{namespace}")
-            component = CrtkRosComponent(node, config, model)
+            component = CRTKROSComponent(node, config, model)
             import omni.usd
 
             stage = omni.usd.get_context().get_stage()
             visual = (
-                CrtkUsdVisual(config.name)
+                CRTKUSDVisual(config.name)
                 if stage.GetPrimAtPath(f"/World/{config.name}").IsValid()
                 else None
             )
@@ -260,7 +205,7 @@ def main() -> int:
         if scene_entries:
             for entry in scene_entries:
                 asset, manifest = _generated_variant(args, entry)
-                add_component(entry["name"], entry["config"], entry["frame"], manifest)
+                add_component(entry.name, entry.config_path, entry.frame, manifest)
 
         # PSM Cartesian CRTK topics are expressed in the moving ECM optical
         # frame, as on a dVRK system. Wire this after all components exist
@@ -276,8 +221,8 @@ def main() -> int:
                     component.set_cartesian_reference(ecm_component.model, ecm_view_frame)
 
         if not args.headless:
-            from dvrk_isaac_sim.isaac_ui import IsaacCrtkWindow
-            ui_window = IsaacCrtkWindow([component for _, component, _, _ in nodes])
+            from dvrk_isaac_sim.isaac_ui import IsaacCRTKWindow
+            ui_window = IsaacCRTKWindow([component for _, component, _, _ in nodes])
 
         # Advance ECM first so every PSM reads the current, not previous-step,
         # camera pose when converting Cartesian state and commands.
@@ -290,7 +235,7 @@ def main() -> int:
         previous_time = float(timeline.get_current_time())
         print("Isaac Sim CRTK smoke test running", flush=True)
         for entry in scene_entries:
-            print(f"  {entry['name']} topics: /{entry['name']}/measured_js, /{entry['name']}/measured_cp, /{entry['name']}/servo_jp", flush=True)
+            print(f"  {entry.name} topics: /{entry.name}/measured_js, /{entry.name}/measured_cp, /{entry.name}/servo_jp", flush=True)
 
         while simulation_app.is_running():
             simulation_app.update()

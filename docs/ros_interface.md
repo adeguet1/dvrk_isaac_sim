@@ -1,6 +1,6 @@
 # ROS 2 interface contract
 
-This document defines the initial interface surface. Exact message types and field semantics must be checked against the current dVRK ROS 2 implementation before the first compatibility release.
+This document defines the initial interface surface. Exact message types and field semantics must be checked against the current dVRK ROS 2 implementation before version 1.
 
 The same names are used by the internal Python interfaces. The ROS adapter is a transport layer, not a naming translation layer.
 
