@@ -188,6 +188,24 @@ def load_scene(scene_path: str | Path) -> SceneConfig:
     )
     if camera.mode not in {"off", "mono", "stereo"}:
         raise ValueError(f"{source}: camera.mode must be off, mono, or stereo")
+    camera_transport = str(camera_document.get("transport", "raw")).lower()
+    if camera_transport not in {"raw", "h264", "raw_and_h264", "rtsp", "rtsp_and_h264"}:
+        raise ValueError(
+            f"{source}: camera.transport must be raw, h264, raw_and_h264, rtsp, or rtsp_and_h264"
+        )
+    if camera_transport in {"rtsp", "rtsp_and_h264"}:
+        rtsp_document = camera_document.get("rtsp", {}) or {}
+        if not isinstance(rtsp_document, dict):
+            raise ValueError(f"{source}: camera.rtsp must be a mapping")
+        port = int(rtsp_document.get("port", 8554))
+        mount_path = str(rtsp_document.get("mount_path", "/ECM"))
+        encoding = str(rtsp_document.get("encoding", "h264")).lower()
+        if not 1 <= port <= 65535:
+            raise ValueError(f"{source}: camera.rtsp.port must be between 1 and 65535")
+        if not mount_path.startswith("/"):
+            raise ValueError(f"{source}: camera.rtsp.mount_path must start with '/'")
+        if encoding not in {"h264", "raw"}:
+            raise ValueError(f"{source}: camera.rtsp.encoding must be h264 or raw")
     if camera.owner != "ECM":
         raise ValueError(f"{source}: only ECM is supported as the camera owner")
 

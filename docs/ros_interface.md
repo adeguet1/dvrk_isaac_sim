@@ -82,13 +82,26 @@ The ECM publishes a rendered endoscope view through ROS 2 image transport:
 
 ```text
 /ECM/image_raw
-/ECM/image_raw/compressed
 /ECM/camera_info
 ```
 
-`/ECM/image_raw` is the raw-image base topic. `image_transport` may expose compressed or other transport variants without requiring changes to the simulator camera implementation. Topic names, encoding, and camera profile are configurable.
+With `scene.camera.transport: raw` (the default), the simulator publishes this `sensor_msgs/Image` topic directly. `h264` uses Isaac Sim's native hardware-accelerated ROS 2 camera helper and publishes `/ECM/image_raw/compressed` with `format: h264`; `rtsp` uses Isaac Sim's built-in NVENC-backed RTSP server; `rtsp_and_h264` enables both RTSP and the ROS 2 H.264 topic.
 
-The raw and JPEG-compressed image topics are published at the configured camera rate (default 30 Hz), independently of the simulation update rate. The image and camera-info messages use the same simulation timestamp and the configured ECM optical frame ID. Set `scene.camera.mode` to `mono`, `stereo`, or `off` in the selected scene YAML. Stereo uses `/ECM/left/...` and `/ECM/right/...` topics.
+The raw or H.264 image topic is published at the configured camera rate (default 30 Hz), independently of the simulation update rate. The image and camera-info messages use the same simulation timestamp and the configured ECM optical frame ID. Set `scene.camera.mode` to `mono`, `stereo`, or `off` in the selected scene YAML. Stereo uses `/ECM/left/...` and `/ECM/right/...` topics.
+
+For H.264 ROS consumers, use the Isaac Sim `isaac_compressed_image_decoder` package or another H.264 decoder. For network video, configure:
+
+```yaml
+scene:
+  camera:
+    transport: rtsp
+    rtsp:
+      port: 8554
+      mount_path: /ECM
+      encoding: h264
+```
+
+The stream URL is `rtsp://SIMULATOR_HOST:8554/ECM`. Stereo uses consecutive ports and `/ECM/left` and `/ECM/right` mount paths.
 
 The current adapter also publishes state topics:
 
@@ -171,3 +184,36 @@ The default 420006 limits are -0.349066 to 1.39626 radians; commands outside the
 
 When an ECM is present, PSM `measured_cp`, `setpoint_cp`, and `measured_cv` are published in the current `ECM_view` frame. The conversion is explicitly FK-based: PSM world FK is transformed into the PSM base frame, then into the current dVRK view frame derived from ECM optical FK (X-left, Y-up, Z-away). Incoming PSM `move_cp` and `servo_cp` commands follow the reverse path—current ECM view frame to PSM base frame to world—before inverse kinematics. This keeps Cartesian teleoperation aligned while the ECM moves. A command with `header.frame_id: world` is accepted as an explicit world-frame diagnostic command.
 
+For standard JPEG transport compatibility, run the ROS 2 republisher in a
+separate process while using `camera.transport: raw`:
+
+```bash
+ros2 run image_transport republish raw compressed --ros-args \
+  -r in:=/ECM/image_raw -r out:=/ECM/image_raw
+```
+
+This creates `/ECM/image_raw/compressed` with the usual JPEG transport. This
+path is convenient for ROS tools but adds a raw-image ROS 2 hop; use native
+H.264 or RTSP for high-rate video.
+
+### RTSP GStreamer client
+
+For an RTSP scene, start with this low-latency GStreamer client on the same or another PC:
+
+```bash
+gst-launch-1.0 -v \
+  rtspsrc location=rtsp://SIMULATOR_IP:8554/ECM \
+    protocols=udp latency=0 drop-on-latency=true \
+  ! rtph264depay wait-for-keyframe=true \
+  ! h264parse \
+  ! nvh264dec \
+  ! queue max-size-buffers=1 leaky=downstream \
+  ! videoconvert \
+  ! autovideosink sync=false
+```
+
+Replace `SIMULATOR_IP` with the Isaac Sim host address. Ensure the client has the
+GStreamer RTP, RTSP, and NVIDIA H.264 decoder plugins installed. UDP with zero
+receiver buffering is recommended for low latency. If UDP is unavailable, use
+`protocols=tcp latency=50 drop-on-latency=true`; TCP is more reliable across
+restricted networks but may add latency.

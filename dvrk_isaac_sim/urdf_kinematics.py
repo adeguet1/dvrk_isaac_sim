@@ -88,7 +88,65 @@ def write_kinematics_manifest(urdf_path: str | Path, output_path: str | Path, mo
         current = joint["parent"]
     chain = list(reversed(chain_reversed))
     active = [joint["name"] for joint in chain if joint["type"] in ("revolute", "continuous", "prismatic") and joint["mimic"] is None]
-    manifest = {"format": 1, "model": model, "tip_link": tip, "root_link": current, "joints": chain, "active_joints": active}
+
+    # The USD importer omits fixed-link nodes when composing the visual
+    # hierarchy. Build paths from the URDF chain and retain the visual mapping
+    # in the manifest so the Isaac backend does not need robot-specific paths.
+    link_paths = {current: "Geometry/world"}
+    pending = list(joints)
+    while pending:
+        next_pending = []
+        progressed = False
+        for joint in pending:
+            if joint["parent"] not in link_paths:
+                next_pending.append(joint)
+                continue
+            parent_path = link_paths[joint["parent"]]
+            link_paths[joint["child"]] = (
+                parent_path if joint["type"] == "fixed"
+                else f"{parent_path}/{joint['child']}"
+            )
+            progressed = True
+        if not progressed:
+            break
+        pending = next_pending
+
+    visual_joints = {}
+    for joint in joints:
+        if joint["type"] not in ("revolute", "continuous", "prismatic"):
+            continue
+        axis = np.asarray(joint["axis"], dtype=float)
+        if np.linalg.norm(axis) == 0.0 or joint["child"] not in link_paths:
+            continue
+        axis_index = int(np.argmax(np.abs(axis)))
+        if np.count_nonzero(np.abs(axis) > 1e-8) != 1:
+            continue
+        visual_path = link_paths[joint["child"]]
+        visual_root = "Geometry/world"
+        if visual_path == visual_root:
+            relative_visual_path = ""
+        elif visual_path.startswith(visual_root + "/"):
+            relative_visual_path = visual_path[len(visual_root) + 1:]
+        else:
+            relative_visual_path = visual_path
+        visual_joints[joint["name"]] = {
+            "prim": relative_visual_path,
+            "operation": "translate" if joint["type"] == "prismatic" else "rotate",
+            "axis": "XYZ"[axis_index],
+            "scale": float(axis[axis_index]),
+            "mimic": joint["mimic"],
+            "source_link": joint["child"],
+        }
+
+    manifest = {
+        "format": 2,
+        "model": model,
+        "tip_link": tip,
+        "root_link": current,
+        "joints": chain,
+        "active_joints": active,
+        "visual": {"root": "Geometry/world", "joints": visual_joints},
+    }
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

@@ -147,6 +147,9 @@ def main() -> int:
         from isaacsim.core.utils.extensions import enable_extension
 
         enable_extension("isaacsim.ros2.bridge")
+        enable_extension("isaacsim.ros2.nodes")
+        if str(args.scene_camera.get("transport", "raw")).lower() in {"rtsp", "rtsp_and_h264"}:
+            enable_extension("isaacsim.streaming.rtsp")
         simulation_app.update()
         scene_entries = args.scene_model.robots
         if scene_entries:
@@ -204,7 +207,7 @@ def main() -> int:
 
             stage = omni.usd.get_context().get_stage()
             visual = (
-                CRTKUSDVisual(config.name)
+                CRTKUSDVisual(config.name, config.kinematics_manifest)
                 if stage.GetPrimAtPath(f"/World/{config.name}").IsValid()
                 else None
             )

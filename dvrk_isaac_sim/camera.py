@@ -24,6 +24,9 @@ class IsaacCameraPublisher:
 
     ``mono`` publishes ``/<ECM>/image_raw`` and ``/<ECM>/camera_info``.
     ``stereo`` publishes the corresponding ``left`` and ``right`` subtopics.
+    The scene camera ``transport`` can be ``raw`` (the default), ``h264``,
+    ``raw_and_h264``, ``rtsp``, or ``rtsp_and_h264``. H.264 uses Isaac Sim's native ROS 2
+    camera helper; RTSP uses Isaac Sim's built-in RTSPCameraHelper.
     The camera pose follows the ECM measured optical pose and is independent of
     any ECM mesh, so the ECM can remain a kinematic-only component.
     """
@@ -33,7 +36,7 @@ class IsaacCameraPublisher:
         if mode not in {"mono", "stereo"}:
             raise ValueError(f"unsupported camera mode: {mode}")
         from isaacsim.sensors.camera import Camera
-        from sensor_msgs.msg import CameraInfo, CompressedImage, Image
+        from sensor_msgs.msg import CameraInfo, Image
 
         camera_config = dict(config.raw.get("robot", {}).get("camera", {}))
         camera_config.update(scene_camera or {})
@@ -50,20 +53,40 @@ class IsaacCameraPublisher:
         self.near = float(camera_config.get("near_clip_m", 0.01))
         self.far = float(camera_config.get("far_clip_m", 10.0))
         self.publish_rate = float(camera_config.get("publish_rate_hz", 30.0))
-        self.jpeg_quality = int(camera_config.get("jpeg_quality", 85))
+        self.transport = str(camera_config.get("transport", "raw")).lower()
+        if self.transport not in {"raw", "h264", "raw_and_h264", "rtsp", "rtsp_and_h264"}:
+            raise ValueError(
+                "camera.transport must be raw, h264, raw_and_h264, rtsp, or rtsp_and_h264"
+            )
+        rtsp_config = camera_config.get("rtsp", {}) or {}
+        if not isinstance(rtsp_config, dict):
+            raise ValueError("camera.rtsp must be a mapping")
+        self.rtsp_port = int(rtsp_config.get("port", 8554))
+        self.rtsp_mount_path = str(
+            rtsp_config.get("mount_path", f"/{config.name}")
+        )
+        self.rtsp_encoding = str(rtsp_config.get("encoding", "h264")).lower()
+        if not 1 <= self.rtsp_port <= 65535:
+            raise ValueError("camera.rtsp.port must be between 1 and 65535")
+        if not self.rtsp_mount_path.startswith("/"):
+            raise ValueError("camera.rtsp.mount_path must start with '/'")
+        if self.rtsp_encoding not in {"h264", "raw"}:
+            raise ValueError("camera.rtsp.encoding must be h264 or raw")
         if self.publish_rate <= 0.0:
             raise ValueError("camera.publish_rate_hz must be positive")
         self._last_capture = float("-inf")
         self._Image = Image
-        self._CompressedImage = CompressedImage
         self._CameraInfo = CameraInfo
         self._cameras = []
         self._publishers = []
+        self._h264_graphs = []
+        self._rtsp_graphs = []
         names = ["mono"] if mode == "mono" else ["left", "right"]
         for name in names:
             suffix = "" if mode == "mono" else f"/{name}"
+            camera_prim_path = f"/World/ECM/Camera{name.title() if mode == 'stereo' else ''}"
             camera = Camera(
-                prim_path=f"/World/ECM/Camera{name.title() if mode == 'stereo' else ''}",
+                prim_path=camera_prim_path,
                 name=f"ECM_camera_{name}", frequency=30,
                 resolution=(self.width, self.height),
                 orientation=np.asarray([1.0, 0.0, 0.0, 0.0]),
@@ -77,11 +100,113 @@ class IsaacCameraPublisher:
             camera.set_clipping_range(self.near, self.far)
             self._cameras.append(camera)
             self._publishers.append((
-                node.create_publisher(Image, f"image_raw{suffix}", 10),
-                node.create_publisher(CompressedImage, f"image_raw{suffix}/compressed", 10),
+                node.create_publisher(Image, f"image_raw{suffix}", 10)
+                if self.transport in {"raw", "raw_and_h264"} else None,
                 node.create_publisher(CameraInfo, f"camera_info{suffix}", 10),
             ))
-        node.get_logger().info(f"ECM {mode} camera publishing image_raw and camera_info")
+            if self.transport in {"h264", "raw_and_h264", "rtsp_and_h264"}:
+                self._h264_graphs.append(
+                    self._create_h264_graph(camera_prim_path, name, suffix)
+                )
+            if self.transport in {"rtsp", "rtsp_and_h264"}:
+                self._rtsp_graphs.append(
+                    self._create_rtsp_graph(camera_prim_path, name, index=len(self._rtsp_graphs))
+                )
+        node.get_logger().info(
+            f"ECM {mode} camera transport={self.transport}; publishing camera_info"
+        )
+
+    def _create_h264_graph(self, camera_prim: str, name: str, suffix: str):
+        """Create an on-demand native Isaac H.264 camera graph.
+
+        The graph is configured from Python, while image capture, hardware
+        encoding, and ROS 2 publication are performed by Isaac Sim's native
+        ROS 2 camera extension. On-demand evaluation lets this class retain
+        ownership of the configured camera publication rate.
+        """
+        import omni.graph.core as og
+        import usdrt.Sdf
+
+        graph_path = f"/World/CRTKROS/{self.node.get_name()}_{name}_H264"
+        keys = og.Controller.Keys
+        graph, _, _, _ = og.Controller.edit(
+            {
+                "graph_path": graph_path,
+                "evaluator_name": "push",
+                "pipeline_stage": og.GraphPipelineStage.GRAPH_PIPELINE_STAGE_ONDEMAND,
+            },
+            {
+                keys.CREATE_NODES: [
+                    ("OnTick", "omni.graph.action.OnTick"),
+                    ("RenderProduct", "isaacsim.core.nodes.IsaacCreateRenderProduct"),
+                    ("H264Publish", "isaacsim.ros2.bridge.ROS2CameraHelper"),
+                ],
+                keys.CONNECT: [
+                    ("OnTick.outputs:tick", "RenderProduct.inputs:execIn"),
+                    ("RenderProduct.outputs:execOut", "H264Publish.inputs:execIn"),
+                    ("RenderProduct.outputs:renderProductPath",
+                     "H264Publish.inputs:renderProductPath"),
+                ],
+                keys.SET_VALUES: [
+                    ("RenderProduct.inputs:cameraPrim", [usdrt.Sdf.Path(camera_prim)]),
+                    ("RenderProduct.inputs:width", self.width),
+                    ("RenderProduct.inputs:height", self.height),
+                    ("H264Publish.inputs:topicName", "image_raw/compressed"),
+                    ("H264Publish.inputs:type", "rgb_h264"),
+                    ("H264Publish.inputs:nodeNamespace",
+                     f"/{self.node.get_namespace().strip('/')}{suffix}"),
+                    ("H264Publish.inputs:frameId", self.frame_id),
+                    ("H264Publish.inputs:queueSize", 2),
+                    ("H264Publish.inputs:resetSimulationTimeOnStop", True),
+                ],
+            },
+        )
+        og.Controller.evaluate_sync(graph)
+        return graph
+
+    def _create_rtsp_graph(self, camera_prim: str, name: str, index: int):
+        """Create Isaac Sim's built-in RTSP camera graph."""
+        import omni.graph.core as og
+
+        port = self.rtsp_port + index
+        mount_path = self.rtsp_mount_path.rstrip("/")
+        if self.mode == "stereo":
+            mount_path = f"{mount_path}/{name}"
+        graph_path = f"/World/CRTKROS/{self.node.get_name()}_{name}_RTSP"
+        keys = og.Controller.Keys
+        graph, _, _, _ = og.Controller.edit(
+            {
+                "graph_path": graph_path,
+                "evaluator_name": "push",
+                "pipeline_stage": og.GraphPipelineStage.GRAPH_PIPELINE_STAGE_ONDEMAND,
+            },
+            {
+                keys.CREATE_NODES: [
+                    ("OnTick", "omni.graph.action.OnTick"),
+                    ("RenderProduct", "isaacsim.core.nodes.IsaacCreateRenderProduct"),
+                    ("RTSPPublish", "isaacsim.streaming.rtsp.RTSPCameraHelper"),
+                ],
+                keys.CONNECT: [
+                    ("OnTick.outputs:tick", "RenderProduct.inputs:execIn"),
+                    ("RenderProduct.outputs:execOut", "RTSPPublish.inputs:execIn"),
+                    ("RenderProduct.outputs:renderProductPath",
+                     "RTSPPublish.inputs:renderProductPath"),
+                ],
+                keys.SET_VALUES: [
+                    ("RenderProduct.inputs:cameraPrim", camera_prim),
+                    ("RenderProduct.inputs:width", self.width),
+                    ("RenderProduct.inputs:height", self.height),
+                    ("RTSPPublish.inputs:port", port),
+                    ("RTSPPublish.inputs:mountPath", mount_path),
+                    ("RTSPPublish.inputs:useRawEncoding",
+                     self.rtsp_encoding == "raw"),
+                ],
+            },
+        )
+        self.node.get_logger().info(
+            f"ECM RTSP stream: rtsp://<host>:{port}{mount_path}"
+        )
+        return graph
 
     def _image_message(self, data: np.ndarray, stamp, camera_name: str):
         message = self._Image()
@@ -100,27 +225,6 @@ class IsaacCameraPublisher:
         message.is_bigendian = False
         message.step = int(data.shape[1] * data.shape[2])
         message.data = data.tobytes()
-        return message
-
-    def _compressed_message(self, data: np.ndarray, stamp):
-        import cv2
-
-        if data.ndim == 2:
-            rgb = data
-        else:
-            rgb = data[:, :, :3]
-        # cv2 expects BGR for JPEG encoding; Isaac returns RGBA/RGB.
-        bgr = cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2BGR)
-        success, encoded = cv2.imencode(
-            ".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
-        )
-        if not success:
-            raise RuntimeError("JPEG encoding failed")
-        message = self._CompressedImage()
-        message.header.stamp = stamp
-        message.header.frame_id = self.frame_id
-        message.format = "jpeg"
-        message.data = encoded.tobytes()
         return message
 
     def _camera_info(self, stamp):
@@ -144,7 +248,7 @@ class IsaacCameraPublisher:
         from builtin_interfaces.msg import Time
         stamp = Time(sec=int(seconds), nanosec=int((seconds - int(seconds)) * 1e9))
         orientation = _quaternion_wxyz(pose.orientation)
-        for index, (camera, (image_publisher, compressed_publisher, info_publisher)) in enumerate(zip(self._cameras, self._publishers)):
+        for index, (camera, (image_publisher, info_publisher)) in enumerate(zip(self._cameras, self._publishers)):
             position = pose.position.copy()
             if self.mode == "stereo":
                 position += pose.orientation[:, 0] * (self.baseline / 2.0) * (-1.0 if index == 0 else 1.0)
@@ -152,10 +256,20 @@ class IsaacCameraPublisher:
             # world-axis camera mode also defines +X as forward; using the
             # ROS mode here would incorrectly treat local +Z as forward.
             camera.set_world_pose(position=position, orientation=orientation, camera_axes="world")
-            data = camera.get_rgba()
-            if data is None:
-                continue
             self._last_capture = seconds
-            image_publisher.publish(self._image_message(data, stamp, str(index)))
-            compressed_publisher.publish(self._compressed_message(data, stamp))
+            if image_publisher is not None:
+                data = camera.get_rgba()
+                if data is None:
+                    continue
+                image_publisher.publish(self._image_message(data, stamp, str(index)))
             info_publisher.publish(self._camera_info(stamp))
+            if self.transport in {"h264", "raw_and_h264", "rtsp_and_h264"}:
+                import omni.graph.core as og
+                og.Controller.evaluate_sync(self._h264_graphs[
+                    0 if self.mode == "mono" else index
+                ])
+            if self.transport in {"rtsp", "rtsp_and_h264"}:
+                import omni.graph.core as og
+                og.Controller.evaluate_sync(self._rtsp_graphs[
+                    0 if self.mode == "mono" else index
+                ])

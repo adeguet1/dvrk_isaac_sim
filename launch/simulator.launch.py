@@ -1,6 +1,7 @@
 """Start a configured dVRK Isaac Sim scene through Isaac Sim Python."""
 
 from pathlib import Path
+import json
 import shlex
 
 from ament_index_python.packages import get_package_share_directory
@@ -44,7 +45,14 @@ def _start_sim(context):
         asset_path = generated_dir / asset_name / robot.name / f"{robot.name}.usda"
         manifest_path = generated_dir / asset_name / "kinematics.json"
         if asset_path.is_file() and manifest_path.is_file():
-            return
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                manifest = None
+            if isinstance(manifest, dict) and isinstance(manifest.get("visual"), dict):
+                return
+            # Older manifests predate manifest-driven USD visual mappings.
+            # Regenerate them instead of allowing runtime visual failures.
         command = [str(isaac_python), str(converter), "--model", robot.name,
                    "--output-dir", str(generated_dir), "--asset-name", asset_name, "--force"]
         command.extend(["--instrument", variant] if robot.type == "PSM"

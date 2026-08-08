@@ -38,6 +38,7 @@ def test_scene_resolution_and_scene_owned_variants():
     scene_path = resolve_scene_path(config_path, "PSM2_420093.yaml")
     scene = load_scene(scene_path)
     assert scene.camera.mode == "mono"
+    assert scene.camera.as_dict().get("transport") == "rtsp_and_h264"
     assert [(robot.name, robot.instrument, robot.endoscope) for robot in scene.robots] == [
         ("PSM2", "420093", None),
         ("ECM", None, "Si_straight"),

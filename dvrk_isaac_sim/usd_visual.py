@@ -1,14 +1,17 @@
-"""Synchronize the kinematic CRTK model with visual-only USD link transforms."""
+"""Synchronize kinematic CRTK state with manifest-described USD transforms."""
 
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 import numpy as np
 
 
 class CRTKUSDVisual:
-    """Apply measured joint positions to a referenced virtual dVRK asset."""
+    """Apply measured joints to visual operations defined by a USD manifest."""
 
-    def __init__(self, component_name: str):
+    def __init__(self, component_name: str, manifest_path: str | Path):
         from pxr import UsdGeom
         import omni.usd
 
@@ -16,34 +19,38 @@ class CRTKUSDVisual:
         self._stage = omni.usd.get_context().get_stage()
         if self._stage is None:
             raise RuntimeError("Isaac Sim stage is not available")
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        visual = manifest.get("visual")
+        if not isinstance(visual, dict) or not isinstance(visual.get("joints"), dict):
+            raise RuntimeError(
+                f"{manifest_path}: manifest has no visual joint mapping; regenerate the USD asset"
+            )
+
         self._UsdGeom = UsdGeom
-        root = f"/World/{component_name}/Geometry/world"
-        prefix = f"{root}/{component_name}_RCM_yaw_link"
-        self._ops = {
-            "yaw": self._add_rotate(prefix, "Y"),
-            "pitch": self._add_rotate(f"{prefix}/{component_name}_RCM_pitch_link", "X"),
-            "insertion": self._add_translate(
-                f"{prefix}/{component_name}_RCM_pitch_link/{component_name}_adaptor_link"
-            ),
-        }
-        roll_path = (
-            f"{prefix}/{component_name}_RCM_pitch_link/"
-            f"{component_name}_adaptor_link/{component_name}_roll_link"
-        )
-        if self._stage.GetPrimAtPath(roll_path).IsValid():
-            self._ops["roll"] = self._add_rotate(roll_path, "Z")
-        wrist_pitch_path = f"{roll_path}/{component_name}_wrist_pitch_link"
-        if self._stage.GetPrimAtPath(wrist_pitch_path).IsValid():
-            self._ops["wrist_pitch"] = self._add_rotate(wrist_pitch_path, "Z")
-        wrist_yaw_path = f"{wrist_pitch_path}/{component_name}_wrist_yaw_link"
-        if self._stage.GetPrimAtPath(wrist_yaw_path).IsValid():
-            self._ops["wrist_yaw"] = self._add_rotate(wrist_yaw_path, "Z")
-            jaw_1_path = f"{wrist_yaw_path}/{component_name}_jaw_1_link"
-            jaw_2_path = f"{wrist_yaw_path}/{component_name}_jaw_2_link"
-            if self._stage.GetPrimAtPath(jaw_1_path).IsValid():
-                self._ops["jaw_1"] = self._add_rotate(jaw_1_path, "Z")
-            if self._stage.GetPrimAtPath(jaw_2_path).IsValid():
-                self._ops["jaw_2"] = self._add_rotate(jaw_2_path, "Z")
+        root = f"/World/{component_name}/{visual.get('root', 'Geometry/world')}"
+        self._visual_joints = {}
+        for name, specification in visual["joints"].items():
+            if not isinstance(specification, dict):
+                continue
+            relative_prim = str(specification.get("prim", ""))
+            visual_root = str(visual.get("root", "Geometry/world")).strip("/")
+            # Manifests are expected to store paths relative to visual.root.
+            # Normalize an older/generated full-root path as well so a stale
+            # cache cannot produce Geometry/world/Geometry/world/... paths.
+            if relative_prim == visual_root:
+                relative_prim = ""
+            elif relative_prim.startswith(visual_root + "/"):
+                relative_prim = relative_prim[len(visual_root) + 1:]
+            prim_path = f"{root}/{relative_prim}" if relative_prim else root
+            operation = specification.get("operation")
+            axis = str(specification.get("axis", "Z"))
+            if operation == "rotate":
+                op = self._add_rotate(prim_path, axis)
+            elif operation == "translate":
+                op = self._add_translate(prim_path, axis)
+            else:
+                raise RuntimeError(f"{manifest_path}: unsupported visual operation {operation!r} for {name}")
+            self._visual_joints[name] = (op, float(specification.get("scale", 1.0)), specification.get("mimic"))
 
     def _xform(self, prim_path: str):
         prim = self._stage.GetPrimAtPath(prim_path)
@@ -55,32 +62,33 @@ class CRTKUSDVisual:
         method = getattr(self._xform(prim_path), f"AddRotate{axis}Op")
         return method(precision=self._UsdGeom.XformOp.PrecisionDouble, opSuffix="crtk")
 
-    def _add_translate(self, prim_path: str):
+    def _add_translate(self, prim_path: str, axis: str):
+        # Isaac/USD translation ops are vector-valued; the manifest axis selects
+        # the component that receives the joint displacement.
         return self._xform(prim_path).AddTranslateOp(
-            precision=self._UsdGeom.XformOp.PrecisionDouble,
-            opSuffix="crtk",
-        )
+            precision=self._UsdGeom.XformOp.PrecisionDouble, opSuffix="crtk"
+        ), axis
+
+    @staticmethod
+    def _set_operation(operation, value: float) -> None:
+        if isinstance(operation, tuple):
+            op, axis = operation
+            vector = np.zeros(3, dtype=float)
+            vector["XYZ".index(axis)] = value
+            op.Set(tuple(float(item) for item in vector))
+        else:
+            operation.Set(float(np.degrees(value)))
 
     def update(
         self, joint_names: tuple[str, ...], joint_position: np.ndarray,
         jaw_position: float | None = None,
     ) -> None:
         values = dict(zip(joint_names, joint_position))
-        if "yaw" in values:
-            self._ops["yaw"].Set(float(-np.degrees(values["yaw"])))
-        if "pitch" in values:
-            self._ops["pitch"].Set(float(-np.degrees(values["pitch"])))
-        if "insertion" in values:
-            self._ops["insertion"].Set((0.0, 0.0, float(values["insertion"])))
-        if "roll" in values and "roll" in self._ops:
-            self._ops["roll"].Set(float(np.degrees(values["roll"])))
-        if "wrist_pitch" in values and "wrist_pitch" in self._ops:
-            self._ops["wrist_pitch"].Set(float(np.degrees(values["wrist_pitch"])))
-        if "wrist_yaw" in values and "wrist_yaw" in self._ops:
-            self._ops["wrist_yaw"].Set(float(np.degrees(values["wrist_yaw"])))
-        if jaw_position is not None:
-            # Instrument URDFs define the two jaws as +/- 0.5 mimic joints.
-            if "jaw_1" in self._ops:
-                self._ops["jaw_1"].Set(float(np.degrees(0.5 * jaw_position)))
-            if "jaw_2" in self._ops:
-                self._ops["jaw_2"].Set(float(np.degrees(-0.5 * jaw_position)))
+        for name, (operation, scale, mimic) in self._visual_joints.items():
+            if name in values:
+                value = float(values[name])
+            elif jaw_position is not None and isinstance(mimic, dict) and mimic.get("joint") == "jaw":
+                value = float(jaw_position) * float(mimic.get("multiplier", 1.0)) + float(mimic.get("offset", 0.0))
+            else:
+                continue
+            self._set_operation(operation, scale * value)

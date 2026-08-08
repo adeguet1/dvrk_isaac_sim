@@ -252,9 +252,26 @@ ros2 launch dvrk_isaac_sim simulator.launch.py \
 ```
 
 Set `camera.mode` to `mono`, `stereo`, or `off` in the scene YAML. Set
-`renderer` to the desired Isaac Sim renderer in the config YAML. Set
-`simulation_rate_hz` to the fixed kinematic update rate; it defaults to 120 Hz. Mono publishes `/ECM/image_raw` and
-`/ECM/camera_info`; stereo publishes corresponding `left` and `right` topics.
+`camera.transport` to `raw` (default), `h264`, `raw_and_h264`, `rtsp`, or `rtsp_and_h264`.
+The `h264` option uses Isaac Sim's native hardware-accelerated ROS 2 camera
+publisher and publishes `sensor_msgs/msg/CompressedImage` with
+`format: h264` on `image_raw/compressed`. `raw_and_h264` publishes both
+forms but performs two camera captures. The `rtsp` and `rtsp_and_h264` options use Isaac Sim's
+built-in NVENC-backed RTSP server. Configure it with:
+```yaml
+scene:
+  camera:
+    transport: rtsp
+    rtsp:
+      port: 8554
+      mount_path: /ECM
+      encoding: h264
+```
+Set `renderer` to the desired Isaac Sim renderer in the config YAML. Set
+`simulation_rate_hz` to the fixed kinematic update rate; it defaults to 120 Hz.
+Mono publishes `/ECM/image_raw` and `/ECM/camera_info`; stereo publishes
+corresponding `left` and `right` topics. H.264 image consumers should use the
+`isaac_compressed_image_decoder` package or another H.264 decoder.
 Missing USD/URDF conversion artifacts are generated automatically in the
 configured `generated_dir`.
 
@@ -289,3 +306,25 @@ ros2 topic pub --once /PSM1/move_jp sensor_msgs/msg/JointState \
 
 The corresponding `measured_js` and `measured_cp` values should move over
 subsequent simulation steps.
+
+### RTSP GStreamer client
+
+For an RTSP scene, start with this low-latency GStreamer client on the same or another PC:
+
+```bash
+gst-launch-1.0 -v \
+  rtspsrc location=rtsp://SIMULATOR_IP:8554/ECM \
+    protocols=udp latency=0 drop-on-latency=true \
+  ! rtph264depay wait-for-keyframe=true \
+  ! h264parse \
+  ! nvh264dec \
+  ! queue max-size-buffers=1 leaky=downstream \
+  ! videoconvert \
+  ! autovideosink sync=false
+```
+
+Replace `SIMULATOR_IP` with the Isaac Sim host address. Ensure the client has the
+GStreamer RTP, RTSP, and NVIDIA H.264 decoder plugins installed. UDP with zero
+receiver buffering is recommended for low latency. If UDP is unavailable, use
+`protocols=tcp latency=50 drop-on-latency=true`; TCP is more reliable across
+restricted networks but may add latency.

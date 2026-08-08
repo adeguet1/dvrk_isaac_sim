@@ -61,15 +61,17 @@ The rendering pipeline provides configurable image dimensions, field of view, cl
 
 ROS image publication uses `image_transport` conventions. Raw image and camera information are the stable base interfaces; compressed transports are optional transport plugins.
 
-The initial configurable topics are:
+The simulator publishes these base topics:
 
 ```text
 /ECM/image_raw
-/ECM/image_raw/compressed
 /ECM/camera_info
-
-For stereo, the corresponding topics are `/ECM/left/image_raw`, `/ECM/left/image_raw/compressed`, `/ECM/left/camera_info`, `/ECM/right/image_raw`, `/ECM/right/image_raw/compressed`, and `/ECM/right/camera_info`.
 ```
+
+For stereo, the corresponding base topics are `/ECM/left/image_raw`,
+`/ECM/left/camera_info`, `/ECM/right/image_raw`, and
+`/ECM/right/camera_info`. The standard `image_transport` compressed plugin can provide JPEG `/compressed` variants. The scene can instead select the native RTSP transport for efficient network video.
+
 
 The implementation should preserve the option to support dVRK-style left/right topic names later.
 
