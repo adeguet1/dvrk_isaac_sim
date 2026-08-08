@@ -31,7 +31,7 @@ from dvrk_isaac_sim.scene import load_scene, load_simulator_config, resolve_scen
 def _arguments() -> argparse.Namespace:
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=root / "config/isaac_sim.yaml",
+    parser.add_argument("--config", type=Path, default=root / "share/isaac_sim.yaml",
                         help="YAML file containing simulator settings")
     parser.add_argument("--headless", action="store_true", default=None,
                         help="override config and run without an Isaac Sim window")
@@ -127,6 +127,17 @@ def _ros_time(seconds: float):
     return result
 
 
+def _spin_some(executor, max_callbacks: int = 32) -> None:
+    """Run a bounded batch of currently ready ROS callbacks.
+
+    rclpy does not expose rclcpp's ``spin_some`` API. Repeated non-blocking
+    ``spin_once`` calls provide the same behavior while the bound prevents a
+    continuously publishing topic from taking over an Isaac frame.
+    """
+    for _ in range(max_callbacks):
+        executor.spin_once(timeout_sec=0.0)
+
+
 def _generated_variant(args: argparse.Namespace, entry: SceneRobot) -> tuple[Path, Path]:
     variant = (entry.instrument or "420006" if entry.type == "PSM"
                else entry.endoscope or "Si_straight")
@@ -142,6 +153,7 @@ def main() -> int:
 
     simulation_app = SimulationApp({"headless": args.headless, "renderer": args.renderer})
     nodes = []
+    executor = None
     ui_window = None
     try:
         from isaacsim.core.utils.extensions import enable_extension
@@ -184,6 +196,8 @@ def main() -> int:
         from dvrk_isaac_sim.usd_visual import CRTKUSDVisual
 
         rclpy.init()
+        from rclpy.executors import SingleThreadedExecutor
+        executor = SingleThreadedExecutor()
 
         cameras = []
 
@@ -200,6 +214,7 @@ def main() -> int:
             else:
                 raise ValueError(f"Unsupported robot type: {config.type}")
             node = Node(f"dvrk_isaac_sim_{config.name}", namespace=f"/{namespace}")
+            executor.add_node(node)
             component = CRTKROSComponent(
                 node, config, model, _ros_time(1.0 / args.simulation_rate_hz)
             )
@@ -270,9 +285,13 @@ def main() -> int:
                 clock.clock = stamp
                 clock_publisher.publish(clock)
 
-            for node, component, visual, camera in ordered_nodes:
+            for _, component, _, _ in ordered_nodes:
                 component.set_simulation_stamp(stamp)
-                rclpy.spin_once(node, timeout_sec=0.0)
+
+            _spin_some(executor)
+
+            for node, component, visual, camera in ordered_nodes:
+                component.process_pending_commands()
                 component.model.step(fixed_dt if playing else 0.0)
                 measured = component.model.measured_js()
                 if visual is not None:
@@ -300,6 +319,8 @@ def main() -> int:
     finally:
         if ui_window is not None:
             ui_window.close()
+        if executor is not None:
+            executor.shutdown()
         if "rclpy" in locals() and rclpy.ok():
             for node, _, _, _ in nodes:
                 node.destroy_node()

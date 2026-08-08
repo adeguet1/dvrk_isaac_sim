@@ -36,7 +36,7 @@ def _run(command: list[str], label: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--config", type=Path, default=PACKAGE_ROOT / "config/isaac_sim.yaml",
+        "--config", type=Path, default=PACKAGE_ROOT / "share/isaac_sim.yaml",
         help="simulator configuration YAML",
     )
     parser.add_argument(

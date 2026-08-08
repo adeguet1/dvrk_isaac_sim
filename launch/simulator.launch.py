@@ -92,14 +92,14 @@ def _start_sim(context):
 
 def generate_launch_description():
     package_share = Path(get_package_share_directory("dvrk_isaac_sim"))
-    default_config = str(package_share / "config" / "isaac_sim.yaml")
+    default_config = str(package_share / "share" / "isaac_sim.yaml")
     return LaunchDescription([
         DeclareLaunchArgument("config", default_value=default_config,
                               description="Saved simulator config YAML"),
         DeclareLaunchArgument("isaac_sim_dir", default_value="",
                               description="Optional Isaac Sim path override"),
         DeclareLaunchArgument("scene", default_value="",
-                              description="Scene YAML path or filename under config/scenes"),
+                              description="Scene YAML path or filename under share/scenes"),
         DeclareLaunchArgument("headless", default_value="",
                               description="Optional headless override; otherwise use config"),
         DeclareLaunchArgument("duration", default_value="",

@@ -18,7 +18,7 @@ from dvrk_isaac_sim.scene import available_scene_paths, load_scene, load_simulat
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=root / "config" / "isaac_sim.yaml")
+    parser.add_argument("--config", type=Path, default=root / "share" / "isaac_sim.yaml")
     args = parser.parse_args()
     config_path = args.config.expanduser().resolve()
     simulator = load_simulator_config(config_path)

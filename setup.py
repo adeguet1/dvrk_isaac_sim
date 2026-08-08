@@ -4,30 +4,36 @@ from setuptools import find_packages, setup
 
 
 package_name = "dvrk_isaac_sim"
-local_isaac_config = Path("config/isaac_sim.yaml")
+local_isaac_config = Path("share/isaac_sim.yaml")
 config_files = [
-    "config/PSM.yaml",
-    "config/PSM1.yaml",
-    "config/PSM2.yaml",
-    "config/PSM3.yaml",
-    "config/ECM.yaml",
+    "share/arms/PSM.yaml",
+    "share/arms/PSM1.yaml",
+    "share/arms/PSM2.yaml",
+    "share/arms/PSM3.yaml",
+    "share/arms/ECM.yaml",
+]
+data_files = [
+    ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
+    (f"share/{package_name}", ["package.xml"]),
+    (f"share/{package_name}/share/arms", [
+        *config_files,
+    ]),
+    (f"share/{package_name}/share/scenes", [
+        str(path) for path in sorted(Path("share/scenes").glob("*.yaml"))
+    ]),
+    (f"share/{package_name}/share/dvrk_systems", [
+        str(path) for path in sorted(Path("share/dvrk_systems").glob("*.json"))
+    ]),
 ]
 if local_isaac_config.exists():
-    config_files.append(str(local_isaac_config))
+    data_files.append((f"share/{package_name}/share", [str(local_isaac_config)]))
 
 setup(
     name=package_name,
     version="0.0.1",
     packages=find_packages(exclude=["test"]),
     data_files=[
-        ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
-        (f"share/{package_name}", ["package.xml"]),
-        (f"share/{package_name}/config", [
-            *config_files,
-        ]),
-        (f"share/{package_name}/config/scenes", [
-            str(path) for path in sorted(Path("config/scenes").glob("*.yaml"))
-        ]),
+        *data_files,
         (f"share/{package_name}/launch", ["launch/simulator.launch.py"]),
         (f"share/{package_name}/scripts", [
             "scripts/simulator.py",

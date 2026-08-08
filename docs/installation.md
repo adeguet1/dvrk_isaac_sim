@@ -64,7 +64,7 @@ For example:
 # Enter: ~/devel/isaacsim-6.0.1
 ```
 
-The script expands `~`, searches both locations, resolves the directory containing the executable `python.sh`, and saves it in the git-ignored `config/isaac_sim.yaml`.
+The script expands `~`, searches both locations, resolves the directory containing the executable `python.sh`, and saves it in the git-ignored `share/isaac_sim.yaml`.
 It then sources ROS 2 Jazzy and builds the complete workspace with Python 3.12.
 
 ### Forcing Python 3.12
@@ -165,7 +165,7 @@ source /path/to/isaac_sim_ws/install/setup.bash
 ros2 run dvrk_isaac_sim dvrk_isaac_sim_ros \
   --ros-args \
   -r __ns:=/PSM1 \
-  -p robot_config:=/path/to/dvrk_isaac_sim/config/PSM1.yaml
+  -p robot_config:=/path/to/dvrk_isaac_sim/share/arms/PSM1.yaml
 ```
 
 The Isaac Sim smoke test below uses the same sourced environment to launch the simulator and its in-process CRTK ROS adapter.
@@ -211,14 +211,14 @@ the project uses kinematic motion and does not need PhysX rigid bodies. Use
 
 ## Isaac Sim ROS 2 simulation
 
-The simulator is configured from `config/isaac_sim.yaml`. This file is installed
+The simulator is configured from `share/isaac_sim.yaml`. This file is installed
 with the package and is the recommended place to save researcher-specific
 settings. It contains the Isaac Sim path, generated-asset cache, renderer,
 startup mode, duration, fixed simulation rate, and ROS environment. Scene-specific robots, instruments,
 endoscope, and camera settings belong in the selected scene YAML.
 It intentionally does not select a default scene.
 
-Scenes are stored under `config/scenes/*.yaml`. The repository includes
+Scenes are stored under `share/scenes/*.yaml`. The repository includes
 individual PSM examples (`PSM1_420006.yaml`, `PSM2_420093.yaml`, and
 `PSM3_420006.yaml`) plus two- and three-PSM cart scenes. Scene files select the
 robots, frames, and instrument variants.
@@ -226,7 +226,7 @@ robots, frames, and instrument variants.
 The launch command has only a few user-facing options:
 
 - `config:=...` selects a saved config file;
-- `scene:=...` selects a scene filename under `config/scenes` or an explicit YAML path;
+- `scene:=...` selects a scene filename under `share/scenes` or an explicit YAML path;
 - `headless:=true` and `duration:=...` are temporary runtime overrides;
 - `isaac_sim_dir:=...` temporarily overrides the saved Isaac Sim path.
 
@@ -244,7 +244,7 @@ ros2 launch dvrk_isaac_sim simulator.launch.py scene:=PSM1_420006.yaml
 To save settings, copy the example config and edit it:
 
 ```bash
-cp /path/to/isaac_sim_ws/install/dvrk_isaac_sim/share/dvrk_isaac_sim/config/isaac_sim.yaml \
+cp /path/to/isaac_sim_ws/install/dvrk_isaac_sim/share/dvrk_isaac_sim/share/isaac_sim.yaml \
    /path/to/my-dvrk-isaac.yaml
 $EDITOR /path/to/my-dvrk-isaac.yaml
 ros2 launch dvrk_isaac_sim simulator.launch.py \

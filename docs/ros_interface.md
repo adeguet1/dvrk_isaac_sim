@@ -9,7 +9,7 @@ The first ROS 2 adapter is a Python node installed as `dvrk_isaac_sim_ros`. It a
 ```bash
 ros2 run dvrk_isaac_sim dvrk_isaac_sim_ros \
   --ros-args -r __ns:=/PSM1 \
-  -p robot_config:=/path/to/config/PSM1.yaml
+  -p robot_config:=/path/to/share/arms/PSM1.yaml
 ```
 
 ## 1. Namespaces
@@ -121,7 +121,7 @@ The joint fields are editable target values. `Apply joint targets` sends them th
 ## 3. Time and pause semantics
 
 The Isaac Sim runner uses a fixed, configurable kinematic timestep from
-`simulation_rate_hz` in `config/isaac_sim.yaml` (default: 120 Hz). It publishes
+`simulation_rate_hz` in `share/isaac_sim.yaml` (default: 120 Hz). It publishes
 `/clock` from that simulation time. All normal CRTK and camera timestamps use
 the same source.
 
@@ -183,6 +183,8 @@ The default 420006 limits are -0.349066 to 1.39626 radians; commands outside the
 ### PSM Cartesian reference frame
 
 When an ECM is present, PSM `measured_cp`, `setpoint_cp`, and `measured_cv` are published in the current `ECM_view` frame. The conversion is explicitly FK-based: PSM world FK is transformed into the PSM base frame, then into the current dVRK view frame derived from ECM optical FK (X-left, Y-up, Z-away). Incoming PSM `move_cp` and `servo_cp` commands follow the reverse path—current ECM view frame to PSM base frame to world—before inverse kinematics. This keeps Cartesian teleoperation aligned while the ECM moves. A command with `header.frame_id: world` is accepted as an explicit world-frame diagnostic command.
+
+The dVRK system configuration should therefore use identity PSM base transforms with `reference_frame: ECM_view`; the patient-cart poses belong to Isaac Sim, not to the teleoperation system configuration. MTML and MTMR retain explicit `HRSV` base transforms so Haply motion follows the dVRK surgeon-display convention.
 
 For standard JPEG transport compatibility, run the ROS 2 republisher in a
 separate process while using `camera.transport: raw`:

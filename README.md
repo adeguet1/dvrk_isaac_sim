@@ -23,14 +23,15 @@ Full patient-cart CAD, dynamics, contact simulation, and hardware-runtime depend
 - [Design specification](docs/design.md)
 - [Frames and conventions](docs/frames.md)
 - [ROS 2 interface](docs/ros_interface.md)
-- [Shared PSM defaults](config/PSM.yaml)
-- [PSM1 configuration](config/PSM1.yaml)
-- [ECM configuration](config/ECM.yaml)
-- [Two-PSM scene](config/scenes/ECM_PSM1_PSM2.yaml)
-- [Three-PSM scene](config/scenes/ECM_PSM1_PSM2_PSM3.yaml)
-- [PSM1 + ECM example](config/scenes/PSM1_420006.yaml)
-- [PSM2 + ECM example](config/scenes/PSM2_420093.yaml)
-- [PSM3 + ECM example](config/scenes/PSM3_420006.yaml)
+- [Shared PSM defaults](share/arms/PSM.yaml)
+- [PSM1 configuration](share/arms/PSM1.yaml)
+- [ECM configuration](share/arms/ECM.yaml)
+- [Two-PSM scene](share/scenes/ECM_PSM1_PSM2.yaml)
+- [Three-PSM scene](share/scenes/ECM_PSM1_PSM2_PSM3.yaml)
+- [PSM1 + ECM example](share/scenes/PSM1_420006.yaml)
+- [PSM2 + ECM example](share/scenes/PSM2_420093.yaml)
+- [PSM3 + ECM example](share/scenes/PSM3_420006.yaml)
+- [Haply MTML/MTMR + ROS patient-cart system](share/dvrk_systems/system-MTML-MTMR-Haply-patient-cart-ROS.json)
 - [Cart frame generator](scripts/generate_cart_frames.py)
 
 ## dVRK resources
@@ -83,14 +84,53 @@ The initial ROS 2 adapter can be run for one configured component:
 ```bash
 ros2 run dvrk_isaac_sim dvrk_isaac_sim_ros \
   --ros-args -r __ns:=/PSM1 \
-  -p robot_config:=/path/to/config/PSM1.yaml
+  -p robot_config:=/path/to/share/arms/PSM1.yaml
 ```
 
 ## Tested teleoperation
 
+### 3Dconnexion
+
 The ROS 2 interface has been tested with the dVRK system configuration using an old Logitech 3Dconnexion SpaceBall 5000 as the MTMR input and the simulated `/PSM1` as the puppet. The corresponding dVRK configuration is `system-MTMR-3Dconnexion-PSM1_from_ROS.json` in `saw3Dconnexion/share`.
 
 Start Isaac Sim first, source the Isaac Sim ROS 2 workspace, and launch the PSM/ECM simulation. Then start the dVRK system with the SpaceBall configuration. The PSM should report `ENABLED` and `is_homed=true`; MTMR motion should teleoperate the simulated PSM Cartesian pose and jaw.
+
+### Haply
+
+Start the Haply service first and run each command in its own terminal. The Isaac scene publishes the PSM1, PSM2, PSM3, and ECM ROS interfaces; the dVRK system configuration connects Haply MTML/MTMR devices to those interfaces. The compressed ROS 2 topic uses native H.264, which `rqt_image_view` cannot decode, so use the RTSP GStreamer client for the endoscope view.
+
+Terminal 1, Isaac Sim:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/wss/isaac/install/setup.bash
+ros2 launch dvrk_isaac_sim simulator.launch.py scene:=ECM_PSM1_PSM2_PSM3.yaml
+```
+
+Terminal 2, camera view:
+
+```bash
+gst-launch-1.0  \
+  rtspsrc location=rtsp://localhost:8554/ECM \
+    protocols=udp latency=0 drop-on-latency=true \
+  ! rtph264depay wait-for-keyframe=true \
+  ! h264parse \
+  ! nvh264dec \
+  ! queue max-size-buffers=1 leaky=downstream \
+  ! videoconvert \
+  ! autovideosink sync=false
+```
+
+Terminal 3, dVRK system:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/wss/dvrk/install/setup.bash
+cd ~/wss/isaac/src/dvrk_isaac_sim/share/dvrk_systems
+ros2 run dvrk_robot dvrk_system -j system-MTML-MTMR-Haply-patient-cart-ROS.json
+```
+
+The Haply configuration expects the Haply service at `ws://localhost:10001`. The console input mode is simulated; Haply MTML/MTMR provide the teleoperation devices, while PSM and ECM state comes from Isaac Sim over ROS 2.
 
 ## Testing
 

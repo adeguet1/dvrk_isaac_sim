@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Iterable
 
 import numpy as np
@@ -53,6 +54,12 @@ class CRTKROSComponent:
         self._cartesian_reference: CRTKComponent | None = None
         self._simulation_stamp = simulation_stamp
         self._cartesian_reference_frame = self._frame_id
+        # Servo commands can arrive faster than the Isaac update loop. Keep
+        # only the newest command and solve IK from the simulation thread.
+        self._pending_servo_cp = None
+        self._last_ik_warning = None
+        self._last_ik_warning_time = 0.0
+        self._ik_warning_count = 0
         # Static world pose of this PSM base frame. The ECM view pose is
         # dynamic and is evaluated from ECM FK for every conversion.
         self._base_pose = Pose(
@@ -78,7 +85,7 @@ class CRTKROSComponent:
         node.create_subscription(JointState, "move_jp", self._move_jp_callback, 10)
         node.create_subscription(JointState, "servo_jp", self._servo_jp_callback, 10)
         node.create_subscription(PoseStamped, "move_cp", self._move_cp_callback, 10)
-        node.create_subscription(PoseStamped, "servo_cp", self._servo_cp_callback, 10)
+        node.create_subscription(PoseStamped, "servo_cp", self._servo_cp_callback, 1)
         if self._has_jaw:
             self._jaw_move_subscription = node.create_subscription(
                 JointState, "jaw/move_jp", self._jaw_servo_jp_callback, 10
@@ -124,14 +131,30 @@ class CRTKROSComponent:
 
     def _ik_failure(self, command: str, message: str) -> None:
         text = f"{command} IK failed: {message}"
-        self._publish_error(text)
-        self.node.get_logger().error(f"{self.config.name} {text}")
-        changed, state_error = self._operating_state.command("disable")
-        if changed:
-            self._publish_operating_state(self._event_stamp())
-            self._publish_info("state changed to DISABLED after IK failure")
-        elif state_error:
-            self._publish_warning(f"could not disable after IK failure: {state_error}")
+        now = time.monotonic()
+        if text != self._last_ik_warning:
+            self._last_ik_warning = text
+            self._last_ik_warning_time = now
+            self._ik_warning_count = 1
+            self._publish_warning(text)
+            self.node.get_logger().warning(f"{self.config.name} {text}")
+            return
+
+        self._ik_warning_count += 1
+        if now - self._last_ik_warning_time >= 1.0:
+            self._last_ik_warning_time = now
+            self._publish_warning(
+                f"{text} (repeated {self._ik_warning_count} times)"
+            )
+            self.node.get_logger().warning(
+                f"{self.config.name} {text} "
+                f"(repeated {self._ik_warning_count} times)"
+            )
+
+    def _clear_ik_warning(self) -> None:
+        self._last_ik_warning = None
+        self._last_ik_warning_time = 0.0
+        self._ik_warning_count = 0
 
     def set_cartesian_reference(self, reference: CRTKComponent, frame_id: str) -> None:
         """Use a moving ECM pose as the PSM Cartesian reference frame.
@@ -318,11 +341,21 @@ class CRTKROSComponent:
             )
             if not result.success:
                 self._ik_failure("move_cp", result.message)
+            else:
+                self._clear_ik_warning()
         except ValueError as error:
             self._publish_warning(f"rejected move_cp: {error}")
             self.node.get_logger().warning(f"{self.config.name} rejected move_cp: {error}")
 
     def _servo_cp_callback(self, message) -> None:
+        self._pending_servo_cp = message
+
+    def process_pending_commands(self) -> None:
+        """Apply the newest deferred servo command from the simulation loop."""
+        message = self._pending_servo_cp
+        self._pending_servo_cp = None
+        if message is None:
+            return
         if not self._motion_allowed("servo_cp"):
             return
         try:
@@ -331,6 +364,8 @@ class CRTKROSComponent:
             )
             if not result.success:
                 self._ik_failure("servo_cp", result.message)
+            else:
+                self._clear_ik_warning()
         except ValueError as error:
             self._publish_warning(f"rejected servo_cp: {error}")
             self.node.get_logger().warning(f"{self.config.name} rejected servo_cp: {error}")

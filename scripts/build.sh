@@ -36,9 +36,9 @@ if [[ -z "${isaac_python}" ]]; then
 fi
 
 isaac_dir="$(dirname "${isaac_python}")"
-printf 'isaac_sim_dir: "%s"\n' "${isaac_dir}" > "${repo_dir}/config/isaac_sim.yaml"
+printf 'isaac_sim_dir: "%s"\n' "${isaac_dir}" > "${repo_dir}/share/isaac_sim.yaml"
 echo "Configured Isaac Sim: ${isaac_dir}"
-echo "Saved configuration: ${repo_dir}/config/isaac_sim.yaml"
+echo "Saved configuration: ${repo_dir}/share/isaac_sim.yaml"
 
 # ROS setup hooks may reference optional unset variables, so temporarily
 # disable nounset while sourcing the environment.
