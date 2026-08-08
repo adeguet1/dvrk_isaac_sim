@@ -14,7 +14,16 @@ from pathlib import Path
 
 from dvrk_isaac_sim.urdf_kinematics import write_kinematics_manifest
 
-DEFAULT_OUTPUT = Path.cwd() / ".generated" / "isaacsim-6.0"
+def _default_output() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if parent.name == "src":
+            return parent.parent / ".generated" / "isaacsim-6.0"
+        if parent.name == "install":
+            return parent.parent / ".generated" / "isaacsim-6.0"
+    return Path.cwd() / ".generated" / "isaacsim-6.0"
+
+
+DEFAULT_OUTPUT = _default_output()
 
 
 def _model_root() -> Path:

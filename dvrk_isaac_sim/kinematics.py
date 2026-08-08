@@ -10,6 +10,7 @@ import numpy as np
 
 from .config import RobotConfig
 from .urdf_kinematics import UrdfKinematicChain
+from .rotations import quaternion_matrix_xyzw as _quaternion_matrix_xyzw
 
 
 @dataclass(frozen=True)
@@ -50,14 +51,6 @@ def _rpy_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
         [-sp, cp * sr, cp * cr],
     ])
 
-
-def _quaternion_matrix_xyzw(quaternion: np.ndarray) -> np.ndarray:
-    x, y, z, w = quaternion / np.linalg.norm(quaternion)
-    return np.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-    ])
 
 
 def _rotation(axis: np.ndarray, angle: float) -> np.ndarray:

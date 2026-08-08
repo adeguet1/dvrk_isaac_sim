@@ -53,6 +53,7 @@ def _arguments() -> argparse.Namespace:
     args.renderer = simulator_config.renderer
     args.headless = simulator_config.headless if args.headless is None else args.headless
     args.duration = simulator_config.duration if args.duration is None else args.duration
+    args.simulation_rate_hz = simulator_config.simulation_rate_hz
     args.scene_camera = args.scene_model.camera.as_dict()
     args.camera = args.scene_model.camera.mode
     if args.renderer not in {"RaytracedLighting", "RealTimePathTracing", "PathTracing"}:
@@ -102,6 +103,15 @@ def _setup_scene_lighting() -> None:
     key.CreateIntensityAttr(1800.0)
     key.CreateAngleAttr(0.5)
     UsdGeom.Xformable(key.GetPrim()).AddRotateXYZOp().Set(Gf.Vec3d(35.0, -25.0, -30.0))
+
+
+def _configure_fixed_timestep(timeline, rate_hz: float) -> None:
+    """Configure Isaac's timeline for the requested fixed simulation rate."""
+    # These timeline controls are available in Isaac Sim 6.0.  Keep the
+    # guarded form so configuration-only tooling can still import this file.
+    timeline.set_time_codes_per_second(float(rate_hz))
+    if hasattr(timeline, "set_target_framerate"):
+        timeline.set_target_framerate(float(rate_hz))
 
 
 def _ros_time(seconds: float):
@@ -155,6 +165,7 @@ def main() -> int:
         import rclpy
         from rclpy.node import Node
         from crtk_msgs.msg import OperatingState
+        from rosgraph_msgs.msg import Clock
         from omni.timeline import get_timeline_interface
 
         # This import is intentional: it is the custom-message preflight check.
@@ -186,7 +197,9 @@ def main() -> int:
             else:
                 raise ValueError(f"Unsupported robot type: {config.type}")
             node = Node(f"dvrk_isaac_sim_{config.name}", namespace=f"/{namespace}")
-            component = CRTKROSComponent(node, config, model)
+            component = CRTKROSComponent(
+                node, config, model, _ros_time(1.0 / args.simulation_rate_hz)
+            )
             import omni.usd
 
             stage = omni.usd.get_context().get_stage()
@@ -231,34 +244,46 @@ def main() -> int:
         )
 
         timeline = get_timeline_interface()
+        _configure_fixed_timestep(timeline, args.simulation_rate_hz)
         timeline.play()
-        previous_time = float(timeline.get_current_time())
+        simulation_time = max(0.0, float(timeline.get_current_time()))
+        fixed_dt = 1.0 / args.simulation_rate_hz
+        clock_publisher = nodes[0][0].create_publisher(Clock, "/clock", 10)
         print("Isaac Sim CRTK smoke test running", flush=True)
         for entry in scene_entries:
             print(f"  {entry.name} topics: /{entry.name}/measured_js, /{entry.name}/measured_cp, /{entry.name}/servo_jp", flush=True)
 
         while simulation_app.is_running():
             simulation_app.update()
-            current_time = float(timeline.get_current_time())
-            dt = max(0.0, current_time - previous_time)
-            previous_time = current_time
+            playing = bool(timeline.is_playing())
+            if playing:
+                simulation_time += fixed_dt
+                timeline.set_current_time(simulation_time)
+            current_time = simulation_time
+            stamp = _ros_time(current_time)
+
+            if playing:
+                clock = Clock()
+                clock.clock = stamp
+                clock_publisher.publish(clock)
 
             for node, component, visual, camera in ordered_nodes:
+                component.set_simulation_stamp(stamp)
                 rclpy.spin_once(node, timeout_sec=0.0)
-                component.model.step(dt)
+                component.model.step(fixed_dt if playing else 0.0)
                 measured = component.model.measured_js()
                 if visual is not None:
                     visual.update(
                         measured.names, measured.position,
                         component.jaw_position,
                     )
-                component.publish(_ros_time(current_time))
-                if camera is not None:
+                component.publish(stamp, valid=playing)
+                if camera is not None and playing:
                     camera.publish(current_time, component.model.measured_cp())
             if ui_window is not None:
                 ui_window.update()
 
-            if args.duration > 0.0 and current_time >= args.duration:
+            if args.duration > 0.0 and playing and current_time >= args.duration:
                 break
     except KeyboardInterrupt:
         pass

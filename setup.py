@@ -28,9 +28,10 @@ setup(
         (f"share/{package_name}/config/scenes", [
             str(path) for path in sorted(Path("config/scenes").glob("*.yaml"))
         ]),
-        (f"share/{package_name}/launch", ["launch/run_sim.launch.py"]),
+        (f"share/{package_name}/launch", ["launch/simulator.launch.py"]),
         (f"share/{package_name}/scripts", [
-            "scripts/run_sim.py",
+            "scripts/simulator.py",
+            "scripts/tests",
             "scripts/convert_dvrk_model.py",
             "scripts/generate_cart_frames.py",
             "scripts/validate_config.py",

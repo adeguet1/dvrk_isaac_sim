@@ -19,6 +19,7 @@ class SimulatorConfig:
     renderer: str
     headless: bool
     duration: float
+    simulation_rate_hz: float
     ros_distro: str
     rmw_implementation: str
     scene: str | None
@@ -63,6 +64,17 @@ def load_yaml_mapping(path: str | Path) -> dict[str, Any]:
     return document
 
 
+def _default_generated_dir(source: Path) -> Path:
+    """Choose the workspace cache, without placing assets below ``src``."""
+    for parent in source.parents:
+        if parent.name == "src":
+            return parent.parent / ".generated" / "isaacsim-6.0"
+        if parent.name == "install":
+            return parent.parent / ".generated" / "isaacsim-6.0"
+    # A standalone config outside a colcon workspace gets a local sibling cache.
+    return source.parent / ".generated" / "isaacsim-6.0"
+
+
 def load_simulator_config(path: str | Path) -> SimulatorConfig:
     """Load and validate simulator-level settings from a config YAML."""
     source = Path(path).expanduser().resolve()
@@ -78,7 +90,7 @@ def load_simulator_config(path: str | Path) -> SimulatorConfig:
         selected = Path(str(raw)).expanduser()
         return selected if selected.is_absolute() else (source.parent / selected).resolve()
 
-    generated_dir = path_value("generated_dir", source.parent.parent / ".generated" / "isaacsim-6.0")
+    generated_dir = path_value("generated_dir", _default_generated_dir(source))
     if generated_dir is None:
         raise ValueError(f"{source}: generated_dir is required")
     renderer = str(value("renderer", "RaytracedLighting"))
@@ -87,6 +99,9 @@ def load_simulator_config(path: str | Path) -> SimulatorConfig:
     duration = float(value("duration", 0.0))
     if duration < 0.0:
         raise ValueError(f"{source}: duration cannot be negative")
+    simulation_rate_hz = float(value("simulation_rate_hz", 120.0))
+    if simulation_rate_hz <= 0.0:
+        raise ValueError(f"{source}: simulation_rate_hz must be positive")
     return SimulatorConfig(
         path=source,
         isaac_sim_dir=path_value("isaac_sim_dir"),
@@ -94,6 +109,7 @@ def load_simulator_config(path: str | Path) -> SimulatorConfig:
         renderer=renderer,
         headless=bool(value("headless", False)),
         duration=duration,
+        simulation_rate_hz=simulation_rate_hz,
         ros_distro=str(value("ros_distro", "jazzy")),
         rmw_implementation=str(value("rmw_implementation", "rmw_fastrtps_cpp")),
         scene=str(value("scene")) if value("scene") not in (None, "") else None,

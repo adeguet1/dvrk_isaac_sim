@@ -54,7 +54,7 @@ def _start_sim(context):
     for robot in scene.robots:
         ensure_asset(robot)
 
-    command = [str(isaac_python), str(package_share / "scripts" / "run_sim.py"),
+    command = [str(isaac_python), str(package_share / "scripts" / "simulator.py"),
                "--config", str(config_path), "--scene", str(scene_config)]
     if LaunchConfiguration("headless").perform(context).lower() in {"true", "1", "yes"}:
         command.append("--headless")

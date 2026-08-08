@@ -58,13 +58,13 @@ export ISAAC_SIM_DIR=/path/to/isaac-sim
 
 source /opt/ros/jazzy/setup.bash
 source /path/to/isaac_sim_ws/install/setup.bash
-ros2 launch dvrk_isaac_sim run_sim.launch.py
+ros2 launch dvrk_isaac_sim simulator.launch.py
 ```
 
 Start the full virtual cart with the default three PSMs and kinematic ECM, or select the two-PSM profile:
 
 ```bash
-ros2 launch dvrk_isaac_sim run_sim.launch.py config:=/path/to/my-dvrk-isaac.yaml scene:=PSM1_420006.yaml
+ros2 launch dvrk_isaac_sim simulator.launch.py config:=/path/to/my-dvrk-isaac.yaml scene:=PSM1_420006.yaml
 ```
 
 The default renderer is `RaytracedLighting`, which provides a visible viewport on the supported Isaac Sim setup. Instruments, endoscopes, and camera settings are defined by each scene. In GUI mode, the `dVRK CRTK Monitor` window lists every configured arm, shows live state and measured joints in degrees/mm, and provides joint-target and operating-state controls. The simulator adds neutral lighting and a gray environment so dark instruments remain visible.
@@ -112,8 +112,23 @@ cd /path/to/isaac_sim_ws
 colcon build --symlink-install --packages-select dvrk_isaac_sim
 ```
 
-Isaac Sim runtime and ROS graph integration tests currently require a working
-Isaac Sim installation and are run manually with `ros2 launch`.
+The combined test runner executes the Python tests, validates all YAML files,
+and then launches every configured scene headlessly through Isaac Sim. Run it
+from the package directory after building and sourcing the workspace:
+
+```bash
+cd /path/to/isaac_sim_ws/src/dvrk_isaac_sim
+python3.12 scripts/tests
+```
+
+To run only the tests that do not require Isaac Sim:
+
+```bash
+python3.12 scripts/tests --skip-isaac
+```
+
+You can restrict the Isaac Sim phase to selected scenes with repeated
+`--scene` options.
 
 The repository also provides a configuration-only validation command. From the
 workspace root:

@@ -34,7 +34,7 @@ Completed in the current refactor:
 - scene-owned instruments, endoscopes, and camera settings;
 - extraction of operating-state and Cartesian-frame utilities from
   `ros_interface.py`;
-- 12 passing pure-Python tests and a successful package build.
+- 15 passing pure-Python tests and a successful package build.
 
 The version-1 ROS adapter has been structurally refactored; remaining Workstream 2 items are behavior definition and integration coverage.
 
@@ -45,7 +45,7 @@ The version-1 ROS adapter has been structurally refactored; remaining Workstream
 - [x] Create typed configuration objects for simulator and scene settings.
 - [ ] Add `schema_version` to simulator and scene YAML files.
 - [x] Move scene filename/path resolution into one shared module.
-- [x] Make both `run_sim.py` and `run_sim.launch.py` use the same resolver.
+- [x] Make both `simulator.py` and `simulator.launch.py` use the same resolver.
 - [x] Remove duplicated relative-path handling.
 - [x] Preserve support for scene filenames and absolute scene paths.
 - [x] Keep instrument, endoscope, camera, robot list, and frames scene-owned.
@@ -80,7 +80,7 @@ Acceptance criteria:
 
 ### 2.1 Split the Isaac Sim runner
 
-Refactor `scripts/run_sim.py` into focused modules:
+Refactor `scripts/simulator.py` into focused modules:
 
 - [ ] `scene_loader.py` — scene parsing and validation;
 - [ ] `asset_cache.py` — generated USD and kinematics lookup;
@@ -89,29 +89,29 @@ Refactor `scripts/run_sim.py` into focused modules:
 - [x] `camera.py` — camera creation and publication; (existing module)
 - [x] `isaac_ui.py` — GUI integration.
 
-Keep `scripts/run_sim.py` as a thin entry point.
+Keep `scripts/simulator.py` as a thin entry point.
 
 ### 2.2 Make the simulation loop explicit
 
-- [ ] Define one authoritative simulation-step sequence.
-- [ ] Step ECM before PSMs when Cartesian view conversion is enabled.
-- [ ] Publish all timestamps from one simulation-time source.
-- [ ] Add reset, pause, resume, and shutdown handling.
-- [ ] Define behavior for zero, negative, and very large time steps.
-- [ ] Add deterministic stepping mode for tests and scripted experiments.
+- [x] Define one authoritative fixed-step sequence.
+- [x] Step ECM before PSMs when Cartesian view conversion is enabled.
+- [x] Publish all timestamps from one simulation-time source.
+- [x] Define paused behavior: zero timestamps for periodic CRTK data.
+- [x] Define behavior for zero and negative elapsed steps.
+- [ ] Add reset, resume, and deterministic stepping controls for tests and scripted experiments.
 
 ### 2.3 Add ROS simulation time
 
-- [ ] Publish `/clock` from Isaac Sim timeline time.
-- [ ] Configure simulator nodes to use ROS simulation time.
-- [ ] Ensure event messages and periodic state messages use the same clock.
-- [ ] Document the clock behavior and startup ordering.
+- [x] Publish `/clock` from the fixed Isaac Sim timeline.
+- [ ] Configure external simulator clients to use ROS simulation time.
+- [x] Ensure event messages and periodic state messages use the same clock.
+- [x] Document the clock behavior and startup ordering.
 
 Acceptance criteria:
 
-- `ros2 topic echo /clock` advances with the Isaac timeline.
+- `ros2 topic echo /clock` advances at the configured simulation rate.
 - State, event, camera, and command-related timestamps are consistent.
-- Pausing Isaac Sim pauses simulation time and state updates.
+- Pausing Isaac Sim stops `/clock`, publishes zero-stamped periodic CRTK data, and holds robot state.
 
 ## Phase 3 — Kinematics and visual consistency
 

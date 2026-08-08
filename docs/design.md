@@ -139,7 +139,7 @@ auto      load a valid cache entry or convert when missing/stale
 
 `auto` is the convenient default for researchers. `load` is recommended for reproducible experiments and continuous integration.
 
-Generated assets should be cached using a key derived from the source Xacro/URDF and mesh content, instrument or endoscope selection, Isaac Sim version, conversion settings, and asset schema version.
+Generated assets belong under the colcon workspace root `.generated/isaacsim-6.0`, outside `src`, `build`, and `install`. Generated assets should be cached using a key derived from the source Xacro/URDF and mesh content, instrument or endoscope selection, Isaac Sim version, conversion settings, and asset schema version.
 
 A conceptual cache layout is:
 
@@ -222,7 +222,7 @@ The initial safe default is to reject invalid joint positions and report the fai
 
 ## 8. Time and determinism
 
-Simulation time is the source of timestamps when Isaac Sim is running. All state updates occur from one simulation-step callback. ROS publication frequency may be lower than the Isaac update frequency but must never advance robot state independently.
+Simulation time is the source of timestamps when Isaac Sim is running. The simulator advances kinematic state at the fixed, user-configurable `simulation_rate_hz` (default 120 Hz), independently of rendering throughput. All state updates occur from one simulation-step callback. ROS publication must never advance robot state independently. The runner publishes `/clock`; when paused, `/clock` stops and periodic CRTK messages use zero timestamps to indicate invalid/stale data.
 
 Reset must restore:
 

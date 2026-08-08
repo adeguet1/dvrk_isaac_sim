@@ -28,7 +28,7 @@ from .operating_state import CRTKOperatingState
 class CRTKROSComponent:
     """ROS 2 adapter exposing CRTK topics for one kinematic component."""
 
-    def __init__(self, node, config: RobotConfig, model: CRTKComponent):
+    def __init__(self, node, config: RobotConfig, model: CRTKComponent, simulation_stamp=None):
         from crtk_msgs.msg import OperatingState, StringStamped
         from geometry_msgs.msg import PoseStamped, TwistStamped
         from sensor_msgs.msg import JointState
@@ -51,6 +51,7 @@ class CRTKROSComponent:
         self._jaw_velocity = 0.0
         self._frame_id = str(config.raw.get("robot", {}).get("cartesian", {}).get("reference_frame", config.parent_frame))
         self._cartesian_reference: CRTKComponent | None = None
+        self._simulation_stamp = simulation_stamp
         self._cartesian_reference_frame = self._frame_id
         # Static world pose of this PSM base frame. The ECM view pose is
         # dynamic and is evaluated from ECM FK for every conversion.
@@ -88,12 +89,26 @@ class CRTKROSComponent:
         self._state_command_subscription = node.create_subscription(
             StringStamped, "state_command", self._state_command_callback, 10
         )
-        self._publish_operating_state(node.get_clock().now().to_msg())
+        self._publish_operating_state(self._event_stamp())
         self._publish_info("initialized; state is ENABLED")
+
+    def set_simulation_stamp(self, stamp) -> None:
+        """Set the simulation timestamp used by event messages.
+
+        The Isaac runner updates this before processing each simulation step so
+        state, diagnostics, and periodic CRTK messages share one time source.
+        Standalone ROS-node use retains the node clock until this is called.
+        """
+        self._simulation_stamp = stamp
+
+    def _event_stamp(self):
+        if self._simulation_stamp is not None:
+            return self._simulation_stamp
+        return self.node.get_clock().now().to_msg()
 
     def _publish_message(self, publisher, message: str) -> None:
         event = self._StringStamped()
-        event.header.stamp = self.node.get_clock().now().to_msg()
+        event.header.stamp = self._event_stamp()
         event.header.frame_id = self._frame_id
         event.string = str(message)
         publisher.publish(event)
@@ -113,7 +128,7 @@ class CRTKROSComponent:
         self.node.get_logger().error(f"{self.config.name} {text}")
         changed, state_error = self._operating_state.command("disable")
         if changed:
-            self._publish_operating_state(self.node.get_clock().now().to_msg())
+            self._publish_operating_state(self._event_stamp())
             self._publish_info("state changed to DISABLED after IK failure")
         elif state_error:
             self._publish_warning(f"could not disable after IK failure: {state_error}")
@@ -223,7 +238,7 @@ class CRTKROSComponent:
             return False
         if self._operating_state.state in (CRTKOperatingState.DISABLED, CRTKOperatingState.FAULT):
             self.model.move_jp(self.model.measured_js().position)
-        self._publish_operating_state(self.node.get_clock().now().to_msg())
+        self._publish_operating_state(self._event_stamp())
         self._publish_info(f"state is now {self._operating_state.state}")
         return True
 
@@ -248,7 +263,7 @@ class CRTKROSComponent:
             return
         if self._operating_state.state in (CRTKOperatingState.DISABLED, CRTKOperatingState.FAULT):
             self.model.move_jp(self.model.measured_js().position)
-        self._publish_operating_state(self.node.get_clock().now().to_msg())
+        self._publish_operating_state(self._event_stamp())
         state_text = f"state is now {self._operating_state.state}"
         self._publish_info(state_text)
         self.node.get_logger().info(f"{self.config.name} {state_text}")
@@ -348,7 +363,10 @@ class CRTKROSComponent:
         state.string = self._operating_state.state
         self.state_publisher.publish(state)
 
-    def publish(self, stamp) -> None:
+    def publish(self, stamp, valid: bool = True) -> None:
+        """Publish periodic state, using zero time when simulation is paused."""
+        if not valid:
+            stamp = type(stamp)()
         joint_state = self.model.measured_js()
         world_pose = self.model.measured_cp()
         pose = self._pose_for_ros(world_pose)

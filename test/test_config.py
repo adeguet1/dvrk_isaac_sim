@@ -48,6 +48,7 @@ def test_scene_resolution_and_scene_owned_variants():
 def test_simulator_config_is_typed_and_scene_free_by_default():
     config = load_simulator_config(ROOT / "config" / "isaac_sim.yaml")
     assert config.renderer == "RaytracedLighting"
+    assert config.simulation_rate_hz == 120.0
     assert config.headless is False
     assert config.scene is None
     assert config.generated_dir.is_absolute()

@@ -11,30 +11,12 @@ from .config import RobotConfig
 from .kinematics import Pose
 
 
+from .rotations import rotation_to_quaternion_wxyz
+
+
 def _quaternion_wxyz(rotation: np.ndarray) -> tuple[float, float, float, float]:
-    """Convert a proper rotation matrix to Isaac Sim's scalar-first quaternion."""
-    trace = float(np.trace(rotation))
-    if trace > 0.0:
-        scale = 2.0 * math.sqrt(trace + 1.0)
-        w = 0.25 * scale
-        x = (rotation[2, 1] - rotation[1, 2]) / scale
-        y = (rotation[0, 2] - rotation[2, 0]) / scale
-        z = (rotation[1, 0] - rotation[0, 1]) / scale
-    else:
-        diagonal = np.diag(rotation)
-        index = int(np.argmax(diagonal))
-        if index == 0:
-            scale = 2.0 * math.sqrt(max(1.0 + rotation[0, 0] - rotation[1, 1] - rotation[2, 2], 1e-12))
-            w, x, y, z = (rotation[2, 1] - rotation[1, 2]) / scale, 0.25 * scale, (rotation[0, 1] + rotation[1, 0]) / scale, (rotation[0, 2] + rotation[2, 0]) / scale
-        elif index == 1:
-            scale = 2.0 * math.sqrt(max(1.0 + rotation[1, 1] - rotation[0, 0] - rotation[2, 2], 1e-12))
-            w, x, y, z = (rotation[0, 2] - rotation[2, 0]) / scale, (rotation[0, 1] + rotation[1, 0]) / scale, 0.25 * scale, (rotation[1, 2] + rotation[2, 1]) / scale
-        else:
-            scale = 2.0 * math.sqrt(max(1.0 + rotation[2, 2] - rotation[0, 0] - rotation[1, 1], 1e-12))
-            w, x, y, z = (rotation[1, 0] - rotation[0, 1]) / scale, (rotation[0, 2] + rotation[2, 0]) / scale, (rotation[1, 2] + rotation[2, 1]) / scale, 0.25 * scale
-    result = np.asarray([w, x, y, z], dtype=float)
-    result /= np.linalg.norm(result)
-    return tuple(float(value) for value in result)
+    """Convert a rotation matrix to Isaac's scalar-first quaternion."""
+    return rotation_to_quaternion_wxyz(rotation)
 
 
 class IsaacCameraPublisher:

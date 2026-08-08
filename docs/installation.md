@@ -149,7 +149,7 @@ source /path/to/isaac_sim_ws/install/setup.bash
 export ROS_DISTRO=jazzy
 
 cd /path/to/isaac-sim
-./python.sh /path/to/dvrk_isaac_sim/scripts/run_sim.py
+./python.sh /path/to/dvrk_isaac_sim/scripts/simulator.py
 ```
 
 The same rule applies to any future project-specific ROS 2 messages. They must be built for Python 3.12 and be visible through the sourced workspace.
@@ -170,11 +170,23 @@ ros2 run dvrk_isaac_sim dvrk_isaac_sim_ros \
 
 The Isaac Sim smoke test below uses the same sourced environment to launch the simulator and its in-process CRTK ROS adapter.
 
+For the complete local test sequence, use the repository test runner after
+building and sourcing the workspace:
+
+```bash
+cd /path/to/isaac_sim_ws/src/dvrk_isaac_sim
+python3.12 scripts/tests
+```
+
+This runs the pure-Python tests, configuration validation, and a short
+headless Isaac Sim launch for every scene. Use
+`python3.12 scripts/tests --skip-isaac` when Isaac Sim is unavailable.
+
 ## USD asset conversion
 
 The repository does not commit generated USD files. The source of truth remains
 the virtual Xacro/URDF and meshes from dvrk_model; conversion is an explicit,
-repeatable build step and generated assets are cached under .generated/.
+repeatable build step and generated assets are cached under the workspace-root `.generated/isaacsim-6.0/` directory.
 
 Source the ROS 2 workspace first so Xacro can resolve dvrk_model, then invoke
 the converter with Isaac Sim's Python:
@@ -189,8 +201,8 @@ the converter with Isaac Sim's Python:
 
 Use --model PSM2, --model PSM3, or --model ECM for the other virtual
 components. The output directory can be overridden with --output-dir; the
-default is .generated/isaacsim-6.0. This keeps conversion separate from the
-runtime ROS interface and makes it possible to review or regenerate assets
+default is the workspace-root `.generated/isaacsim-6.0/` directory. This
+keeps conversion separate from the runtime ROS interface and makes it possible to review or regenerate assets
 without committing generated files.
 
 By default, the converter removes importer-authored Physics schemas because
@@ -202,7 +214,7 @@ the project uses kinematic motion and does not need PhysX rigid bodies. Use
 The simulator is configured from `config/isaac_sim.yaml`. This file is installed
 with the package and is the recommended place to save researcher-specific
 settings. It contains the Isaac Sim path, generated-asset cache, renderer,
-startup mode, duration, and ROS environment. Scene-specific robots, instruments,
+startup mode, duration, fixed simulation rate, and ROS environment. Scene-specific robots, instruments,
 endoscope, and camera settings belong in the selected scene YAML.
 It intentionally does not select a default scene.
 
@@ -226,7 +238,7 @@ From the sourced ROS 2 environment:
 ```bash
 source /opt/ros/jazzy/setup.bash
 source /path/to/isaac_sim_ws/install/setup.bash
-ros2 launch dvrk_isaac_sim run_sim.launch.py scene:=PSM1_420006.yaml
+ros2 launch dvrk_isaac_sim simulator.launch.py scene:=PSM1_420006.yaml
 ```
 
 To save settings, copy the example config and edit it:
@@ -235,15 +247,27 @@ To save settings, copy the example config and edit it:
 cp /path/to/isaac_sim_ws/install/dvrk_isaac_sim/share/dvrk_isaac_sim/config/isaac_sim.yaml \
    /path/to/my-dvrk-isaac.yaml
 $EDITOR /path/to/my-dvrk-isaac.yaml
-ros2 launch dvrk_isaac_sim run_sim.launch.py \
+ros2 launch dvrk_isaac_sim simulator.launch.py \
   config:=/path/to/my-dvrk-isaac.yaml scene:=ECM_PSM1_PSM2_PSM3.yaml
 ```
 
 Set `camera.mode` to `mono`, `stereo`, or `off` in the scene YAML. Set
-`renderer` to the desired Isaac Sim renderer in the config YAML. Mono publishes `/ECM/image_raw` and
+`renderer` to the desired Isaac Sim renderer in the config YAML. Set
+`simulation_rate_hz` to the fixed kinematic update rate; it defaults to 120 Hz. Mono publishes `/ECM/image_raw` and
 `/ECM/camera_info`; stereo publishes corresponding `left` and `right` topics.
 Missing USD/URDF conversion artifacts are generated automatically in the
-configured `generated_dir`. Users normally do not need to pass conversion paths
+configured `generated_dir`.
+
+The Isaac runner advances the kinematic models by one fixed timestep per
+simulation update: `dt = 1 / simulation_rate_hz`. Rendering performance can
+change the real-time factor, but does not change the configured kinematic
+timestep. The runner publishes `/clock` from this simulation time.
+
+While Isaac Sim is paused, `/clock` stops and robot positions do not advance.
+Periodic CRTK messages continue so clients can detect that the process is alive,
+but their header timestamps are set to zero to indicate invalid/stale data.
+Operating-state events remain latched and are not replaced by a pause event.
+ Users normally do not need to pass conversion paths
 or individual asset paths on the launch command line.
 
 In a second shell, source the same environments and inspect the topics:

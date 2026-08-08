@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate simulator CONFIG and all scene YAML files without Isaac Sim."""
+"""Validate simulator config and all scene YAML files without Isaac Sim."""
 
 from __future__ import annotations
 

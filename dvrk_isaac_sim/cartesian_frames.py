@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from .kinematics import Pose
+from .rotations import quaternion_matrix_xyzw as _quaternion_matrix_xyzw
 
 
 # Isaac's world-camera axes are +X forward, +Y left, +Z up.  dVRK
@@ -42,14 +43,6 @@ def _view_pose_from_optical(optical_pose: Pose) -> Pose:
         optical_pose, Pose(np.zeros(3), _VIEW_TO_OPTICAL_ROTATION)
     )
 
-
-def _quaternion_matrix_xyzw(quaternion: np.ndarray) -> np.ndarray:
-    x, y, z, w = quaternion / np.linalg.norm(quaternion)
-    return np.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-    ])
 
 
 def _relative_twist(pose: Pose, twist, reference: Pose, reference_twist) -> tuple[np.ndarray, np.ndarray]:

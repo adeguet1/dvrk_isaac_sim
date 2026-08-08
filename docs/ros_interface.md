@@ -105,6 +105,19 @@ Non-headless Isaac Sim runs open a `dVRK CRTK Monitor` window. Each configured P
 
 The joint fields are editable target values. `Apply joint targets` sends them through the same kinematic command path as `move_jp` and obeys the operating-state gate. The operating-state selector and `Home` button use the same state-machine path as the ROS `state_command` interface.
 
+## 3. Time and pause semantics
+
+The Isaac Sim runner uses a fixed, configurable kinematic timestep from
+`simulation_rate_hz` in `config/isaac_sim.yaml` (default: 120 Hz). It publishes
+`/clock` from that simulation time. All normal CRTK and camera timestamps use
+the same source.
+
+When the Isaac timeline is paused, `/clock` stops and robot state does not
+advance. Periodic CRTK state messages continue with a zero timestamp, which
+means the simulator process is alive but the reported state is not currently
+valid. Operating-state and other event messages retain their latched event
+semantics and are not emitted merely because the timeline was paused.
+
 ## 3. State semantics
 
 `measured_js` reports the current simulated joint positions and velocities, in the configured joint order. Effort is not physically simulated and should either be omitted or clearly reported as unavailable according to the selected message contract.
