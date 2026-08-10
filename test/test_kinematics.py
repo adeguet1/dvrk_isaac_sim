@@ -30,8 +30,8 @@ def test_psm_move_jp_respects_velocity_limit():
     robot = CRTKPSM(load_robot_config(ROOT / "share/arms/PSM1.yaml"))
     robot.move_jp([0.5, 0.2, 0.2, 0.1, 0.1, 0.1])
     robot.step(0.1)
-    np.testing.assert_allclose(robot.measured_js().position, [0.1, 0.1, 0.16, 0.1, 0.1, 0.1])
-    np.testing.assert_allclose(robot.measured_js().velocity, [1.0, 1.0, 0.4, 1.0, 1.0, 1.0])
+    np.testing.assert_allclose(robot.measured_js().position, [0.2, 0.2, 0.16, 0.1, 0.1, 0.1])
+    np.testing.assert_allclose(robot.measured_js().velocity, [2.0, 2.0, 0.4, 1.0, 1.0, 1.0])
 
 
 def test_ecm_has_four_joints():

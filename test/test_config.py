@@ -20,7 +20,7 @@ def test_ecm_config_loads():
     config = load_robot_config(ROOT / "share/arms/ECM.yaml")
     assert config.name == "ECM"
     assert [joint.name for joint in config.joints] == ["yaw", "pitch", "insertion", "roll"]
-    np.testing.assert_allclose(config.home_position, [0.0, 0.0, 0.08, 0.0])
+    np.testing.assert_allclose(config.home_position, [0.0, 0.0, 0.02, 0.0])
 
 
 def test_psm_instances_include_shared_defaults():
@@ -28,14 +28,14 @@ def test_psm_instances_include_shared_defaults():
         config = load_robot_config(ROOT / "share" / "arms" / f"{name}.yaml")
         assert config.name == name
         assert len(config.joints) == 6
-        assert all(joint.velocity == (0.4 if joint.name == "insertion" else 1.0)
+        assert all(joint.velocity == (0.4 if joint.name == "insertion" else 2.0)
                    for joint in config.joints)
 
 
 def test_scene_resolution_and_scene_owned_variants():
     config_path = ROOT / "share" / "isaac_sim.yaml"
-    assert "PSM2_420093.yaml" in available_scene_names(config_path)
-    scene_path = resolve_scene_path(config_path, "PSM2_420093.yaml")
+    assert "PSM2_420093_mono.yaml" in available_scene_names(config_path)
+    scene_path = resolve_scene_path(config_path, "PSM2_420093_mono.yaml")
     scene = load_scene(scene_path)
     assert scene.camera.mode == "mono"
     assert scene.camera.as_dict().get("transport") == "rtsp_and_h264"

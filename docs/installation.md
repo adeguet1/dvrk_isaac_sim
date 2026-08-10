@@ -219,15 +219,15 @@ endoscope, and camera settings belong in the selected scene YAML.
 It intentionally does not select a default scene.
 
 Scenes are stored under `share/scenes/*.yaml`. The repository includes
-individual PSM examples (`PSM1_420006.yaml`, `PSM2_420093.yaml`, and
-`PSM3_420006.yaml`) plus two- and three-PSM cart scenes. Scene files select the
+individual PSM examples (`PSM1_420006_mono.yaml`, `PSM2_420093_mono.yaml`, and
+`PSM3_420006_mono.yaml`) plus two- and three-PSM cart scenes. Scene files select the
 robots, frames, and instrument variants.
 
 The launch command has only a few user-facing options:
 
 - `config:=...` selects a saved config file;
 - `scene:=...` selects a scene filename under `share/scenes` or an explicit YAML path;
-- `headless:=true` and `duration:=...` are temporary runtime overrides;
+- `headless:=true` and `duration:=...` are one-shot runtime overrides;
 - `isaac_sim_dir:=...` temporarily overrides the saved Isaac Sim path.
 
 If neither `scene:=...` nor `scene` in the config is provided, startup stops and
@@ -238,7 +238,7 @@ From the sourced ROS 2 environment:
 ```bash
 source /opt/ros/jazzy/setup.bash
 source /path/to/isaac_sim_ws/install/setup.bash
-ros2 launch dvrk_isaac_sim simulator.launch.py scene:=PSM1_420006.yaml
+ros2 launch dvrk_isaac_sim simulator.launch.py scene:=PSM1_420006_mono.yaml
 ```
 
 To save settings, copy the example config and edit it:
@@ -248,7 +248,7 @@ cp /path/to/isaac_sim_ws/install/dvrk_isaac_sim/share/dvrk_isaac_sim/share/isaac
    /path/to/my-dvrk-isaac.yaml
 $EDITOR /path/to/my-dvrk-isaac.yaml
 ros2 launch dvrk_isaac_sim simulator.launch.py \
-  config:=/path/to/my-dvrk-isaac.yaml scene:=ECM_PSM1_PSM2_PSM3.yaml
+  config:=/path/to/my-dvrk-isaac.yaml scene:=ECM_PSM1_PSM2_PSM3_mono.yaml
 ```
 
 Set `camera.mode` to `mono`, `stereo`, or `off` in the scene YAML. Set
@@ -269,9 +269,11 @@ scene:
 ```
 Set `renderer` to the desired Isaac Sim renderer in the config YAML. Set
 `simulation_rate_hz` to the fixed kinematic update rate; it defaults to 120 Hz.
-Mono publishes `/ECM/image_raw` and `/ECM/camera_info`; stereo publishes
-corresponding `left` and `right` topics. H.264 image consumers should use the
-`isaac_compressed_image_decoder` package or another H.264 decoder.
+Mono publishes `/ECM/image_raw` and `/ECM/camera_info`. Stereo publishes one
+synchronized side-by-side image on `/ECM/image_raw`, with twice the configured
+width; RTSP streams that same tiled image on the configured `/ECM` mount path.
+H.264 image consumers should use the `isaac_compressed_image_decoder` package
+or another H.264 decoder.
 Missing USD/URDF conversion artifacts are generated automatically in the
 configured `generated_dir`.
 

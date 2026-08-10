@@ -25,7 +25,7 @@ The first release prioritizes predictable installation, a stable ROS 2 interface
 6. The public interface is stable even if the internal IK implementation changes.
 7. Every pose and velocity has an explicitly documented frame and unit convention.
 8. Internal interfaces preserve CRTK/dVRK naming wherever the concept has a CRTK equivalent.
-9. Robot base transforms are configuration-driven initially, with a future TF-backed provider behind the same interface.
+9. Robot base transforms are configuration-driven; a future TF-backed provider can use the same interface.
 
 ## 2.1 CRTK naming policy
 
@@ -82,9 +82,9 @@ ROS 2 publishers/subscribers
        USD scene
 ```
 
-The robot manager owns the current joint state, target state, limits, interpolation, command timeout, and measured-state generation. The Isaac backend applies the resulting state to USD. The ROS adapter translates messages into manager commands and publishes manager state.
+The kinematic model owns the current joint state, target state, limits, interpolation, and measured-state generation. The Isaac backend applies the resulting state to USD. The ROS adapter translates messages into model commands and publishes model state.
 
-The ECM camera/rendering component owns the rendered view. Its camera pose is derived from the ECM optical frame, and its image output is passed to a ROS 2 image publisher independently of the robot-state publication loop.
+The ECM camera/rendering component owns the rendered view. Its pose is derived from the ECM optical frame. Mono uses one render product; stereo packs two baseline-separated cameras into a single tiled render product for the side-by-side ROS image and RTSP stream.
 
 ## 4. Initial degrees of freedom
 
@@ -141,20 +141,21 @@ auto      load a valid cache entry or convert when missing/stale
 
 Generated assets belong under the colcon workspace root `.generated/isaacsim-6.0`, outside `src`, `build`, and `install`. Generated assets should be cached using a key derived from the source Xacro/URDF and mesh content, instrument or endoscope selection, Isaac Sim version, conversion settings, and asset schema version.
 
-A conceptual cache layout is:
+A representative cache layout is:
 
 ```text
 .generated/isaacsim-6.0/
-├── psm_420006_<hash>.usd
-├── psm_420049_<hash>.usd
-└── ecm_Si_straight_<hash>.usd
+├── PSM1_420006/
+│   └── kinematics.json
+└── ECM_Si_straight/
+    └── kinematics.json
 ```
 
 Multiple PSM instances should reference the same cached USD asset with different base transforms. Conversion must preserve joint names, link/frame names, `adaptor_link`, instrument hierarchy, materials where practical, units, limits, and source metadata.
 
-The ECM camera is configured at runtime rather than embedded in the endoscope asset. Camera properties belong to the selected scene YAML; ROS transport and publication behavior belong to the sensor implementation. The repository should initially contain the conversion tool and deterministic configuration, but not generated USD files.
+The ECM camera is configured at runtime rather than embedded in the endoscope asset. Camera properties belong to the selected scene YAML; ROS transport and publication behavior belong to the sensor implementation. Generated USD files are not committed.
 
-## 5. Scene and base-frame configuration
+## 6. Scene and base-frame configuration
 
 Robot YAML files support a repository-local `include` key. Included documents are resolved relative to the including file and deep-merged before validation; child mappings override shared values while lists are replaced as a whole. The three PSM instance files include `share/arms/PSM.yaml`, which contains the common kinematic, velocity, instrument, and control defaults.
 
@@ -162,8 +163,9 @@ Robot YAML files support a repository-local `include` key. Included documents ar
 Scene profiles select the devices launched in a simulation. The initial profiles are:
 
 ```text
-share/scenes/ECM_PSM1_PSM2.yaml
-share/scenes/ECM_PSM1_PSM2_PSM3.yaml
+share/scenes/ECM_PSM1_PSM2_mono.yaml
+share/scenes/ECM_PSM1_PSM2_PSM3_mono.yaml
+share/scenes/ECM_PSM1_PSM2_PSM3_stereo.yaml
 ```
 
 Each profile lists the PSM and ECM configuration files and their base-frame definitions. Every device has:
@@ -173,17 +175,17 @@ Each profile lists the PSM and ECM configuration files and their base-frame defi
 - an initial base pose relative to that parent frame;
 - a device namespace.
 
-The initial implementation uses YAML poses. A future transform provider may resolve the same base frames through TF without changing the robot configurations:
+The current implementation uses YAML poses. A future transform provider may resolve the same base frames through TF without changing the robot configurations:
 
 ```text
 BaseFrameProvider
-├── YamlBaseFrameProvider       initial implementation
+├── YamlBaseFrameProvider       current implementation
 └── TfBaseFrameProvider         future option
 ```
 
 The selected provider must be explicit in the scene configuration. A TF provider must define behavior for missing, stale, or inconsistent transforms.
 
-## 6. Kinematic API
+## 7. Kinematic API
 
 The backend-independent robot API should provide CRTK-named interfaces:
 
@@ -194,33 +196,30 @@ measured_cv(frame="tool") -> Twist
 
 move_jp(joint_position) -> None
 servo_jp(joint_position) -> None
-move_cp(pose) -> None
-servo_cp(pose) -> None
+move_cp(pose) -> IKResult
+servo_cp(pose) -> IKResult
 
 compute_fk(q=None, frame="tool") -> Pose
 compute_jacobian(q=None, frame="tool") -> ndarray
 compute_ik(target, seed=None) -> IKResult
 ```
 
-`measured_js`, `measured_cp`, and `measured_cv` are state interfaces. `move_*` and `servo_*` are command interfaces. The first implementation should include analytical FK/Jacobian tests for the simplified chains. Isaac Sim 6.0 kinematics APIs may be used by the Isaac backend, but they must not leak into the public model API.
+`measured_js`, `measured_cp`, and `measured_cv` are state interfaces. `move_*` and `servo_*` are command interfaces. The test suite includes analytical FK/Jacobian coverage for the simplified chains. Isaac Sim 6.0 kinematics APIs may be used by the Isaac backend, but they must not leak into the public model API.
 
-## 7. Command behavior
+## 8. Command behavior
 
 Position commands are time-continuous by default. The simulator interpolates from the current state to the target while respecting configured velocity limits.
 
-The command engine must support:
+The command engine supports:
 
 - joint-position targets;
-- joint-velocity or servo commands;
+- joint and Cartesian servo targets;
 - Cartesian pose targets through IK;
-- Cartesian velocity targets through a Jacobian-based method later;
-- command timeout/watchdog behavior;
-- reset to configured home positions;
-- explicit rejection or clamping of invalid commands.
+- explicit rejection of invalid commands.
 
 The initial safe default is to reject invalid joint positions and report the failure. Clamping may be added as a configuration option, but should not be silent.
 
-## 8. Time and determinism
+## 9. Time and determinism
 
 Simulation time is the source of timestamps when Isaac Sim is running. The simulator advances kinematic state at the fixed, user-configurable `simulation_rate_hz` (default 120 Hz), independently of rendering throughput. All state updates occur from one simulation-step callback. ROS publication must never advance robot state independently. The runner publishes `/clock`; when paused, `/clock` stops and periodic CRTK messages use zero timestamps to indicate invalid/stale data.
 
@@ -229,11 +228,11 @@ Reset must restore:
 - joint positions;
 - joint velocities;
 - command queues;
-- command timeout state;
+- motion-event state;
 - robot operating state;
 - camera pose derived from the ECM.
 
-## 9. Non-goals
+## 10. Non-goals
 
 The following are outside the project scope, including as long-term goals:
 
@@ -241,7 +240,7 @@ The following are outside the project scope, including as long-term goals:
 - contact forces;
 - collision response;
 - full patient-cart CAD;
-- instrument wrist/jaw actuation;
+- physical jaw dynamics;
 - force/torque sensing;
 - complete dVRK topic coverage;
 - surgical anatomy models.

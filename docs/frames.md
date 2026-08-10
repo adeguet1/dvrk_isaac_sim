@@ -49,7 +49,7 @@ The positive insertion direction must be verified against the imported `dvrk_mod
 - PSM: the instrument/tool frame;
 - ECM: the endoscope optical/view frame.
 
-The ROS frame ID and reference-frame semantics must follow the current dVRK/CRTK ROS 2 interface. Until verified against that interface, the implementation should expose the reference frame as an explicit configuration field rather than hard-code it.
+PSM Cartesian topics use the current `ECM_view` frame when an ECM is present. The simulator derives that frame from the ECM optical FK using the dVRK view axes (X left, Y up, Z away). A command with `header.frame_id: world` is treated as an explicit world-frame command.
 
 The ECM camera must be attached to `ECM_optical`, not directly to the mechanical adaptor frame. This keeps the rendered camera orientation separate from the mechanical endoscope model.
 
@@ -57,9 +57,9 @@ The ECM camera must be attached to `ECM_optical`, not directly to the mechanical
 
 The simulator renders the endoscope perspective from a camera attached to `ECM_optical`. Camera pose follows the kinematic ECM state, including yaw, pitch, insertion, and roll.
 
-The rendering pipeline provides configurable image dimensions, field of view, clipping planes, simulation-time timestamps, and camera calibration information. Stereo output is selected at launch time and uses the same ECM optical pose with a configurable baseline.
+The rendering pipeline provides configurable image dimensions, field of view, clipping planes, simulation-time timestamps, and camera calibration information. Stereo uses two cameras with a configurable baseline, packed into one 1x2 tiled render product.
 
-ROS image publication uses `image_transport` conventions. Raw image and camera information are the stable base interfaces; compressed transports are optional transport plugins.
+ROS image publication uses `image_transport` conventions. Raw image and camera information are the stable base interfaces; native H.264 and RTSP are optional transports.
 
 The simulator publishes these base topics:
 
@@ -68,12 +68,7 @@ The simulator publishes these base topics:
 /ECM/camera_info
 ```
 
-For stereo, the corresponding base topics are `/ECM/left/image_raw`,
-`/ECM/left/camera_info`, `/ECM/right/image_raw`, and
-`/ECM/right/camera_info`. The standard `image_transport` compressed plugin can provide JPEG `/compressed` variants. The scene can instead select the native RTSP transport for efficient network video.
-
-
-The implementation should preserve the option to support dVRK-style left/right topic names later.
+For stereo, `/ECM/image_raw` contains a synchronized side-by-side image with twice the configured width. Per-eye calibration remains available on `/ECM/left/camera_info` and `/ECM/right/camera_info`. With RTSP enabled, the same tiled image is streamed at `rtsp://<host>:8554/ECM`.
 
 ## 6. Required tests
 

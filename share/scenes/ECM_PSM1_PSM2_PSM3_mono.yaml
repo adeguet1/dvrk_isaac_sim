@@ -1,5 +1,5 @@
 scene:
-  name: ECM_PSM1_PSM2
+  name: ECM_PSM1_PSM2_PSM3_mono
   base_frame_provider: yaml
   # SUJ Fixed defaults: frame poses are RCM/base poses in world (meters, ROS xyzw).
   # Replace these values with registered poses or use a future TF provider.
@@ -27,5 +27,7 @@ scene:
       instrument: "420006"
     - config: share/arms/PSM2.yaml
       instrument: "420093"
+    - config: share/arms/PSM3.yaml
+      instrument: "420006"
     - config: share/arms/ECM.yaml
       endoscope: "Si_straight"

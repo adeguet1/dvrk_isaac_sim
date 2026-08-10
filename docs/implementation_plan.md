@@ -15,7 +15,7 @@ The repository now has:
 - manifest-driven visual-only USD updates, mono/stereo ECM image publication, and GUI monitoring;
 - workspace-root `.generated/isaacsim-6.0` asset caching;
 - `simulator.launch.py`, `simulator.py`, configuration validation, and the combined `scripts/tests` runner;
-- 15 pure-Python tests plus headless Isaac Sim scene smoke tests.
+- 16 pure-Python tests plus headless Isaac Sim scene smoke tests.
 
 Version 1 does not require backward-compatible code or YAML aliases. Acronyms
 remain uppercase in APIs and filenames: `CRTK`, `PSM`, `ECM`, `USD`, and `URDF`.
@@ -44,7 +44,7 @@ remain uppercase in APIs and filenames: `CRTK`, `PSM`, `ECM`, `USD`, and `URDF`.
 ### 2.1 Define interface behavior precisely
 
 - Document accepted joint-name ordering and partial-name behavior.
-- Define `move_*` versus `servo_*` semantics and command timeout behavior.
+- Add a servo timeout/watchdog only if a downstream controller requires one.
 - Define all operating-state transitions and rejected-transition behavior.
 - Define jaw limits, units, and mimic behavior in the robot schema.
 - Verify transient-local state delivery to late subscribers.
@@ -56,7 +56,7 @@ remain uppercase in APIs and filenames: `CRTK`, `PSM`, `ECM`, `USD`, and `URDF`.
 - Test `measured_cp`, `setpoint_cp`, `measured_cv`, `move_cp`, and `servo_cp` in the moving view frame.
 - Test explicit `world` frame commands.
 - Test orientation-only, translation-only, and unreachable commands.
-- Verify IK failures disable the component and publish the expected error.
+- Verify IK failures publish a warning and complete the corresponding move handle.
 
 ### 2.3 Native ROS 2 integration tests
 
@@ -71,7 +71,7 @@ remain uppercase in APIs and filenames: `CRTK`, `PSM`, `ECM`, `USD`, and `URDF`.
 
 - Use the configured camera frequency for Isaac camera creation and publication.
 - Verify mono and stereo calibration values against the scene YAML.
-- Verify left/right frame IDs and topic names.
+- Verify tiled stereo image dimensions, calibration topics, and RTSP output.
 - Keep JPEG `image_transport` as a compatibility path; use native H.264 or RTSP for high-rate video.
 - Add image timestamp and frame-consistency tests.
 - Add a low-rate/headless camera test profile that checks image dimensions, encoding, and non-empty frames.
@@ -112,7 +112,7 @@ remain uppercase in APIs and filenames: `CRTK`, `PSM`, `ECM`, `USD`, and `URDF`.
 
 - Add support for additional PSM instruments through scene-only changes where possible.
 - Add optional anatomy/task geometry without coupling it to patient-cart robot models.
-- Add optional stereo-camera behavior tests and examples.
+- Add tiled stereo-camera image-content and RTSP behavior tests.
 - Keep dynamics and full patient-cart CAD outside the core scope unless separately approved.
 
 ## Recommended next sequence

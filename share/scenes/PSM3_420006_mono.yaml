@@ -1,5 +1,5 @@
 scene:
-  name: PSM3_420006
+  name: PSM3_420006_mono
   base_frame_provider: yaml
   frames:
     PSM1: {position: [-0.100000000, 0.000000000, 0.173205081], orientation_xyzw: [0.000000000, -0.258819045, 0.000000000, 0.965925826]}

@@ -23,14 +23,16 @@ Full patient-cart CAD, dynamics, contact simulation, and hardware-runtime depend
 - [Design specification](docs/design.md)
 - [Frames and conventions](docs/frames.md)
 - [ROS 2 interface](docs/ros_interface.md)
+- [Implementation roadmap](docs/implementation_plan.md)
 - [Shared PSM defaults](share/arms/PSM.yaml)
 - [PSM1 configuration](share/arms/PSM1.yaml)
 - [ECM configuration](share/arms/ECM.yaml)
-- [Two-PSM scene](share/scenes/ECM_PSM1_PSM2.yaml)
-- [Three-PSM scene](share/scenes/ECM_PSM1_PSM2_PSM3.yaml)
-- [PSM1 + ECM example](share/scenes/PSM1_420006.yaml)
-- [PSM2 + ECM example](share/scenes/PSM2_420093.yaml)
-- [PSM3 + ECM example](share/scenes/PSM3_420006.yaml)
+- [Two-PSM scene](share/scenes/ECM_PSM1_PSM2_mono.yaml)
+- [Three-PSM mono scene](share/scenes/ECM_PSM1_PSM2_PSM3_mono.yaml)
+- [Three-PSM stereo scene](share/scenes/ECM_PSM1_PSM2_PSM3_stereo.yaml)
+- [PSM1 + ECM example](share/scenes/PSM1_420006_mono.yaml)
+- [PSM2 + ECM example](share/scenes/PSM2_420093_mono.yaml)
+- [PSM3 + ECM example](share/scenes/PSM3_420006_mono.yaml)
 - [Haply MTML/MTMR + ROS patient-cart system](share/dvrk_systems/system-MTML-MTMR-Haply-patient-cart-ROS.json)
 - [Cart frame generator](scripts/generate_cart_frames.py)
 
@@ -65,13 +67,12 @@ ros2 launch dvrk_isaac_sim simulator.launch.py
 Start the full virtual cart with the default three PSMs and kinematic ECM, or select the two-PSM profile:
 
 ```bash
-ros2 launch dvrk_isaac_sim simulator.launch.py config:=/path/to/my-dvrk-isaac.yaml scene:=PSM1_420006.yaml
+ros2 launch dvrk_isaac_sim simulator.launch.py config:=/path/to/my-dvrk-isaac.yaml scene:=PSM1_420006_mono.yaml
 ```
 
 The default renderer is `RaytracedLighting`, which provides a visible viewport on the supported Isaac Sim setup. Instruments, endoscopes, and camera settings are defined by each scene. In GUI mode, the `dVRK CRTK Monitor` window lists every configured arm, shows live state and measured joints in degrees/mm, and provides joint-target and operating-state controls. The simulator adds neutral lighting and a gray environment so dark instruments remain visible.
 
-The ECM has no mesh in the full-cart scene. Its kinematic optical frame drives the Isaac camera. Mono publishes `/ECM/image_raw` and `/ECM/camera_info`; stereo publishes `/ECM/left/...` and `/ECM/right/...`.
-```
+The ECM has no mesh in the full-cart scene. Its kinematic optical frame drives the Isaac camera. Mono publishes `/ECM/image_raw` and `/ECM/camera_info`. Stereo publishes one synchronized side-by-side image on `/ECM/image_raw`; its tiled RTSP stream uses `rtsp://<host>:8554/ECM`.
 
 To regenerate the default cart frame snippet after changing the constants, run:
 
@@ -104,7 +105,7 @@ Terminal 1, Isaac Sim:
 ```bash
 source /opt/ros/jazzy/setup.bash
 source ~/wss/isaac/install/setup.bash
-ros2 launch dvrk_isaac_sim simulator.launch.py scene:=ECM_PSM1_PSM2_PSM3.yaml
+ros2 launch dvrk_isaac_sim simulator.launch.py scene:=ECM_PSM1_PSM2_PSM3_mono.yaml
 ```
 
 Terminal 2, camera view:

@@ -57,6 +57,10 @@ class CRTKROSComponent:
         # Servo commands can arrive faster than the Isaac update loop. Keep
         # only the newest command and solve IK from the simulation thread.
         self._pending_servo_cp = None
+        self._last_published_busy = None
+        self._motion_busy = False
+        self._motion_start_stamp: tuple[int, int] | None = None
+        self._motion_failure_pending = False
         self._last_ik_warning = None
         self._last_ik_warning_time = 0.0
         self._ik_warning_count = 0
@@ -274,6 +278,7 @@ class CRTKROSComponent:
         except ValueError as error:
             self.node.get_logger().warning(f"{self.config.name} rejected GUI joint command: {error}")
             return False
+        self._publish_motion_edges()
         return True
 
     def _state_command_callback(self, message) -> None:
@@ -323,6 +328,8 @@ class CRTKROSComponent:
             self.model.move_jp(self._positions_from_message(message))
         except ValueError as error:
             self.node.get_logger().warning(f"{self.config.name} rejected move_jp: {error}")
+            return
+        self._publish_motion_edges()
 
     def _servo_jp_callback(self, message) -> None:
         if not self._motion_allowed("servo_jp"):
@@ -331,6 +338,7 @@ class CRTKROSComponent:
             self.model.servo_jp(self._positions_from_message(message))
         except ValueError as error:
             self.node.get_logger().warning(f"{self.config.name} rejected servo_jp: {error}")
+            return
 
     def _move_cp_callback(self, message) -> None:
         if not self._motion_allowed("move_cp"):
@@ -341,11 +349,14 @@ class CRTKROSComponent:
             )
             if not result.success:
                 self._ik_failure("move_cp", result.message)
+                self._publish_motion_failure()
             else:
                 self._clear_ik_warning()
+                self._publish_motion_edges()
         except ValueError as error:
             self._publish_warning(f"rejected move_cp: {error}")
             self.node.get_logger().warning(f"{self.config.name} rejected move_cp: {error}")
+            self._publish_motion_failure()
 
     def _servo_cp_callback(self, message) -> None:
         self._pending_servo_cp = message
@@ -382,14 +393,23 @@ class CRTKROSComponent:
             jaw.velocity = [self._jaw_velocity]
             publisher.publish(jaw)
 
-    def _publish_operating_state(self, stamp) -> None:
-        """Publish the state event once, with transient-local durability."""
+    def _publish_operating_state(self, stamp, only_on_change: bool = False,
+                                 busy_override: bool | None = None) -> None:
+        """Publish state, optionally only when the motion busy flag changes."""
+        busy = (
+            busy_override
+            if busy_override is not None
+            else self._operating_state.accepts_motion and self._motion_busy
+        )
+        if only_on_change and busy == self._last_published_busy:
+            return
+        self._last_published_busy = busy
         operating_state = self._OperatingState()
         operating_state.header.stamp = stamp
         operating_state.header.frame_id = self._frame_id
         operating_state.state = self._operating_state.state
         operating_state.is_homed = self._operating_state.is_homed
-        operating_state.is_busy = self._operating_state.accepts_motion and self.model.is_busy()
+        operating_state.is_busy = busy
         self.operating_state_publisher.publish(operating_state)
 
         state = self._StringStamped()
@@ -397,6 +417,22 @@ class CRTKROSComponent:
         state.header.frame_id = self._frame_id
         state.string = self._operating_state.state
         self.state_publisher.publish(state)
+
+    def _publish_motion_edges(self) -> None:
+        """Publish a move-start edge and defer completion to a later tick."""
+        stamp = self._event_stamp()
+        self._motion_busy = True
+        self._motion_start_stamp = (int(stamp.sec), int(stamp.nanosec))
+        self._motion_failure_pending = False
+        self._publish_operating_state(stamp, busy_override=True)
+
+    def _publish_motion_failure(self) -> None:
+        """Complete a rejected move handle without leaving it blocked."""
+        stamp = self._event_stamp()
+        self._motion_busy = True
+        self._motion_start_stamp = (int(stamp.sec), int(stamp.nanosec))
+        self._motion_failure_pending = True
+        self._publish_operating_state(stamp, busy_override=True)
 
     def publish(self, stamp, valid: bool = True) -> None:
         """Publish periodic state, using zero time when simulation is paused."""
@@ -439,3 +475,16 @@ class CRTKROSComponent:
         setpoint.position = self.model.goal_js().position.tolist()
         self.setpoint_js_publisher.publish(setpoint)
         self._publish_jaw_state(stamp)
+        # Servo commands do not affect busy. Complete only a move operation
+        # that previously emitted its busy=true edge.
+        stamp_key = (int(stamp.sec), int(stamp.nanosec))
+        if (
+            self._motion_busy
+            and (self._motion_failure_pending or not self.model.is_busy())
+            and self._motion_start_stamp is not None
+            and stamp_key > self._motion_start_stamp
+        ):
+            self._motion_busy = False
+            self._motion_start_stamp = None
+            self._motion_failure_pending = False
+            self._publish_operating_state(stamp, busy_override=False)

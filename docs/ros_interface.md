@@ -1,6 +1,6 @@
 # ROS 2 interface contract
 
-This document defines the initial interface surface. Exact message types and field semantics must be checked against the current dVRK ROS 2 implementation before version 1.
+This document defines the supported ROS 2 interface surface for the kinematic simulator.
 
 The same names are used by the internal Python interfaces. The ROS adapter is a transport layer, not a naming translation layer.
 
@@ -14,10 +14,12 @@ ros2 run dvrk_isaac_sim dvrk_isaac_sim_ros \
 
 ## 1. Namespaces
 
-The default namespaces are:
+The supported arm namespaces are:
 
 ```text
 /PSM1
+/PSM2
+/PSM3
 /ECM
 ```
 
@@ -32,7 +34,7 @@ PSM1 + PSM2 + PSM3 + ECM
 
 Each PSM publishes under its own namespace. Base-frame configuration is currently loaded from the selected scene YAML profile. TF-based base-frame lookup is reserved for a future release.
 
-## 2. Initial topics
+## 2. Supported topics
 
 ### PSM
 
@@ -74,11 +76,11 @@ state         crtk_msgs/StringStamped
 
 The current adapter publishes `measured_js`, `measured_cp`, `measured_cv`, `setpoint_js`, `operating_state`, and `state`, and subscribes to `move_jp`, `servo_jp`, `move_cp`, and `servo_cp`. Six-DOF PSM Cartesian commands use position-and-orientation IK. ECM Cartesian commands remain position-only because its four joints cannot generally satisfy a full six-axis pose. Both `move_cp` and `servo_cp` use `geometry_msgs/PoseStamped`, matching the dVRK ROS bridge and CRTK Python client.
 
-Each arm also publishes diagnostic events using `crtk_msgs/msg/StringStamped`: `/<arm>/info`, `/<arm>/warning`, and `/<arm>/error`. Initialization milestones and accepted operating-state changes are published on `info`; rejected commands are published on `warning`; IK failures are published on `error`. A Cartesian IK failure disables the arm and publishes the resulting operating-state event.
+Each arm also publishes diagnostic events using `crtk_msgs/msg/StringStamped`: `/<arm>/info`, `/<arm>/warning`, and `/<arm>/error`. Initialization milestones and accepted operating-state changes are published on `info`; rejected commands and IK failures are published on `warning`. A rejected Cartesian move still completes its move handle with a busy-start/busy-end pair so CRTK clients do not block indefinitely.
 
 ### Endoscope view
 
-The ECM publishes a rendered endoscope view through ROS 2 image transport:
+Mono scenes publish a rendered endoscope view through ROS 2 image transport:
 
 ```text
 /ECM/image_raw
@@ -87,7 +89,7 @@ The ECM publishes a rendered endoscope view through ROS 2 image transport:
 
 With `scene.camera.transport: raw` (the default), the simulator publishes this `sensor_msgs/Image` topic directly. `h264` uses Isaac Sim's native hardware-accelerated ROS 2 camera helper and publishes `/ECM/image_raw/compressed` with `format: h264`; `rtsp` uses Isaac Sim's built-in NVENC-backed RTSP server; `rtsp_and_h264` enables both RTSP and the ROS 2 H.264 topic.
 
-The raw or H.264 image topic is published at the configured camera rate (default 30 Hz), independently of the simulation update rate. The image and camera-info messages use the same simulation timestamp and the configured ECM optical frame ID. Set `scene.camera.mode` to `mono`, `stereo`, or `off` in the selected scene YAML. Stereo uses `/ECM/left/...` and `/ECM/right/...` topics.
+The raw or H.264 image topic is published at the configured camera rate (default 30 Hz), independently of the simulation update rate. Mono image and camera-info messages use the same simulation timestamp and the configured ECM optical frame ID. Set `scene.camera.mode` to `mono`, `stereo`, or `off` in the selected scene YAML. Stereo publishes one synchronized side-by-side image at `/ECM/image_raw`, with per-eye calibration on `/ECM/left/camera_info` and `/ECM/right/camera_info`.
 
 For H.264 ROS consumers, use the Isaac Sim `isaac_compressed_image_decoder` package or another H.264 decoder. For network video, configure:
 
@@ -101,7 +103,7 @@ scene:
       encoding: h264
 ```
 
-The stream URL is `rtsp://SIMULATOR_HOST:8554/ECM`. Stereo uses consecutive ports and `/ECM/left` and `/ECM/right` mount paths.
+The stream URL is `rtsp://SIMULATOR_HOST:8554/ECM`. Mono scenes stream the mono camera render product; stereo scenes stream one synchronized 1x2 tiled render product, with the same `/ECM` mount path. No separate per-eye RTSP streams are created.
 
 The current adapter also publishes state topics:
 
@@ -131,7 +133,7 @@ means the simulator process is alive but the reported state is not currently
 valid. Operating-state and other event messages retain their latched event
 semantics and are not emitted merely because the timeline was paused.
 
-## 3. State semantics
+## 4. State semantics
 
 `measured_js` reports the current simulated joint positions and velocities, in the configured joint order. Effort is not physically simulated and should either be omitted or clearly reported as unavailable according to the selected message contract.
 
@@ -139,9 +141,9 @@ semantics and are not emitted merely because the timeline was paused.
 
 `measured_cv` reports the corresponding spatial velocity computed from the joint state and Jacobian, not from noisy physics sensors.
 
-Simulated PSMs and ECM start in `ENABLED` with `is_homed=true` and the insertion joint initialized to `0.12 m`. Motion commands are accepted only in `ENABLED`; `DISABLED`, `PAUSED`, and `FAULT` hold the current joint position. The `operating_state.state` and `state.string` fields are kept synchronized.
+Simulated PSMs and ECM start in `ENABLED` with `is_homed=true` and the insertion joint initialized to `0.12 m`. Motion commands are accepted only in `ENABLED`; `DISABLED`, `PAUSED`, and `FAULT` hold the current joint position. The `operating_state.state` and `state.string` fields are kept synchronized. `move_*` commands publish two busy-edge events: `operating_state.is_busy=true` when a move starts and `false` when the target is reached. `servo_*` commands do not change `is_busy`.
 
-`state_command` uses `crtk_msgs/msg/StringStamped` and the command is carried in its `string` field. The state publishers use reliable, transient-local QoS, so a late subscriber receives the most recent state event. State is published at startup and after each accepted state command; it is not published on every simulation update.
+`state_command` uses `crtk_msgs/msg/StringStamped` and the command is carried in its `string` field. The state publishers use reliable, transient-local QoS with a keep-last depth of 10, so late subscribers receive the retained recent state events. State is published at startup and after each accepted state command; motion publishes only its busy-start and busy-end events.
 
 The supported commands are:
 
@@ -158,15 +160,15 @@ clear_fault  -> DISABLED
 
 `home` and `unhome` are logical operations in this kinematic simulator; no physical homing motion is performed. Invalid commands are rejected and leave the state unchanged.
 
-## 4. Command semantics
+## 5. Command semantics
 
 `move_jp` is a target command. The simulator interpolates to the target.
 
-`servo_jp` is a continuously refreshed command. If no valid servo command is received within the configured timeout, the robot stops or holds according to configuration.
+`servo_jp` and `servo_cp` update the current target without changing `operating_state.is_busy`. The simulator retains the latest Cartesian servo command until it is processed by the next simulation update.
 
 Cartesian commands are implemented through the configured FK/Jacobian and kinematic IK. PSM commands use position and orientation; ECM commands use the reachable position component.
 
-## 5. Compatibility policy
+## 6. Compatibility policy
 
 The ROS adapter must keep message conversion separate from robot logic. Each supported interface version should have a named converter so future dVRK/CRTK changes do not require modifying the kinematic core.
 

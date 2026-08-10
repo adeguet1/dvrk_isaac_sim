@@ -23,7 +23,8 @@ class IsaacCameraPublisher:
     """Create an Isaac camera and publish its rendered frames as ROS images.
 
     ``mono`` publishes ``/<ECM>/image_raw`` and ``/<ECM>/camera_info``.
-    ``stereo`` publishes the corresponding ``left`` and ``right`` subtopics.
+    ``stereo`` publishes the corresponding ``left`` and ``right`` subtopics,
+    plus a synchronized side-by-side image on ``image_raw``.
     The scene camera ``transport`` can be ``raw`` (the default), ``h264``,
     ``raw_and_h264``, ``rtsp``, or ``rtsp_and_h264``. H.264 uses Isaac Sim's native ROS 2
     camera helper; RTSP uses Isaac Sim's built-in RTSPCameraHelper.
@@ -78,7 +79,12 @@ class IsaacCameraPublisher:
         self._Image = Image
         self._CameraInfo = CameraInfo
         self._cameras = []
+        camera_prim_paths = []
         self._publishers = []
+        self._side_by_side_publisher = (
+            node.create_publisher(Image, "image_raw", 10)
+            if mode == "stereo" else None
+        )
         self._h264_graphs = []
         self._rtsp_graphs = []
         names = ["mono"] if mode == "mono" else ["left", "right"]
@@ -92,6 +98,7 @@ class IsaacCameraPublisher:
                 orientation=np.asarray([1.0, 0.0, 0.0, 0.0]),
             )
             camera.initialize()
+            camera_prim_paths.append(camera_prim_path)
             # Isaac expresses focal length and aperture in the same stage
             # units. Preserve the camera's sensor width while selecting the
             # requested horizontal field of view.
@@ -101,22 +108,71 @@ class IsaacCameraPublisher:
             self._cameras.append(camera)
             self._publishers.append((
                 node.create_publisher(Image, f"image_raw{suffix}", 10)
-                if self.transport in {"raw", "raw_and_h264"} else None,
+                if mode == "mono" and self.transport in {"raw", "raw_and_h264"} else None,
                 node.create_publisher(CameraInfo, f"camera_info{suffix}", 10),
             ))
-            if self.transport in {"h264", "raw_and_h264", "rtsp_and_h264"}:
+            if mode == "mono" and self.transport in {"h264", "raw_and_h264", "rtsp_and_h264"}:
                 self._h264_graphs.append(
                     self._create_h264_graph(camera_prim_path, name, suffix)
                 )
-            if self.transport in {"rtsp", "rtsp_and_h264"}:
+            if mode == "mono" and self.transport in {"rtsp", "rtsp_and_h264"}:
                 self._rtsp_graphs.append(
                     self._create_rtsp_graph(camera_prim_path, name, index=len(self._rtsp_graphs))
                 )
-        node.get_logger().info(
-            f"ECM {mode} camera transport={self.transport}; publishing camera_info"
-        )
+        self._tiled_sensor = None
+        self._tiled_render_product_path = None
+        if mode == "stereo":
+            from isaacsim.sensors.experimental.rtx import TiledCameraSensor
 
-    def _create_h264_graph(self, camera_prim: str, name: str, suffix: str):
+            self._tiled_sensor = TiledCameraSensor(
+                camera_prim_paths,
+                resolution=(self.height, self.width),
+                annotators=["rgb"],
+            )
+            self._tiled_render_product_path = str(
+                self._tiled_sensor.render_product.GetPath()
+            )
+            if self.transport in {"h264", "raw_and_h264", "rtsp_and_h264"}:
+                self._h264_graphs.append(
+                    self._create_h264_graph(
+                        self._tiled_render_product_path, "stereo", "", True
+                    )
+                )
+            if self.transport in {"rtsp", "rtsp_and_h264"}:
+                self._rtsp_graphs.append(
+                    self._create_rtsp_graph(
+                        self._tiled_render_product_path, "stereo", 0, True
+                    )
+                )
+        namespace = node.get_namespace().strip("/")
+        topic_prefix = f"/{namespace}" if namespace else ""
+        image_width = self.width * 2 if mode == "stereo" else self.width
+        node.get_logger().info(
+            "ECM ROS 2 image publisher: "
+            f"topic={topic_prefix}/image_raw, "
+            f"encoding={self.encoding}, resolution={image_width}x{self.height}, "
+            f"frame_id={self.frame_id}, rate={self.publish_rate:g} Hz, "
+            f"mode={mode}{', synchronized side-by-side' if mode == 'stereo' else ''}"
+        )
+        if mode == "stereo":
+            node.get_logger().info(
+                f"ECM tiled camera: render_product={self._tiled_render_product_path}, "
+                f"tiled_resolution={self.width * 2}x{self.height}"
+            )
+        if self.transport in {"rtsp", "rtsp_and_h264"}:
+            node.get_logger().info(
+                "ECM GStreamer RTSP: "
+                f"url=rtsp://<host>:{self.rtsp_port}{self.rtsp_mount_path}, "
+                f"encoding={self.rtsp_encoding}, source="
+                f"{'tiled render product' if mode == 'stereo' else 'camera render product'}"
+            )
+        elif mode == "mono":
+            node.get_logger().info(
+                f"ECM GStreamer RTSP: disabled (transport={self.transport})"
+            )
+
+    def _create_h264_graph(self, camera_prim: str, name: str, suffix: str,
+                           existing_render_product: bool = False):
         """Create an on-demand native Isaac H.264 camera graph.
 
         The graph is configured from Python, while image capture, hardware
@@ -129,6 +185,22 @@ class IsaacCameraPublisher:
 
         graph_path = f"/World/CRTKROS/{self.node.get_name()}_{name}_H264"
         keys = og.Controller.Keys
+        create_nodes = [
+            ("OnTick", "omni.graph.action.OnTick"),
+            ("H264Publish", "isaacsim.ros2.bridge.ROS2CameraHelper"),
+        ]
+        connect = [("OnTick.outputs:tick", "H264Publish.inputs:execIn")]
+        values = [
+            ("H264Publish.inputs:renderProductPath", camera_prim)
+        ]
+        if not existing_render_product:
+            create_nodes.insert(1, ("RenderProduct", "isaacsim.core.nodes.IsaacCreateRenderProduct"))
+            connect = [
+                ("OnTick.outputs:tick", "RenderProduct.inputs:execIn"),
+                ("RenderProduct.outputs:execOut", "H264Publish.inputs:execIn"),
+                ("RenderProduct.outputs:renderProductPath", "H264Publish.inputs:renderProductPath"),
+            ]
+            values.insert(0, ("RenderProduct.inputs:cameraPrim", [usdrt.Sdf.Path(camera_prim)]))
         graph, _, _, _ = og.Controller.edit(
             {
                 "graph_path": graph_path,
@@ -136,21 +208,14 @@ class IsaacCameraPublisher:
                 "pipeline_stage": og.GraphPipelineStage.GRAPH_PIPELINE_STAGE_ONDEMAND,
             },
             {
-                keys.CREATE_NODES: [
-                    ("OnTick", "omni.graph.action.OnTick"),
-                    ("RenderProduct", "isaacsim.core.nodes.IsaacCreateRenderProduct"),
-                    ("H264Publish", "isaacsim.ros2.bridge.ROS2CameraHelper"),
-                ],
-                keys.CONNECT: [
-                    ("OnTick.outputs:tick", "RenderProduct.inputs:execIn"),
-                    ("RenderProduct.outputs:execOut", "H264Publish.inputs:execIn"),
-                    ("RenderProduct.outputs:renderProductPath",
-                     "H264Publish.inputs:renderProductPath"),
-                ],
+                keys.CREATE_NODES: create_nodes,
+                keys.CONNECT: connect,
                 keys.SET_VALUES: [
-                    ("RenderProduct.inputs:cameraPrim", [usdrt.Sdf.Path(camera_prim)]),
-                    ("RenderProduct.inputs:width", self.width),
-                    ("RenderProduct.inputs:height", self.height),
+                    *values,
+                    *([] if existing_render_product else [
+                        ("RenderProduct.inputs:width", self.width),
+                        ("RenderProduct.inputs:height", self.height),
+                    ]),
                     ("H264Publish.inputs:topicName", "image_raw/compressed"),
                     ("H264Publish.inputs:type", "rgb_h264"),
                     ("H264Publish.inputs:nodeNamespace",
@@ -164,7 +229,8 @@ class IsaacCameraPublisher:
         og.Controller.evaluate_sync(graph)
         return graph
 
-    def _create_rtsp_graph(self, camera_prim: str, name: str, index: int):
+    def _create_rtsp_graph(self, camera_prim: str, name: str, index: int,
+                           existing_render_product: bool = False):
         """Create Isaac Sim's built-in RTSP camera graph."""
         import omni.graph.core as og
 
@@ -174,6 +240,18 @@ class IsaacCameraPublisher:
             mount_path = f"{mount_path}/{name}"
         graph_path = f"/World/CRTKROS/{self.node.get_name()}_{name}_RTSP"
         keys = og.Controller.Keys
+        create_nodes = [("OnTick", "omni.graph.action.OnTick"),
+                        ("RTSPPublish", "isaacsim.streaming.rtsp.RTSPCameraHelper")]
+        connect = [("OnTick.outputs:tick", "RTSPPublish.inputs:execIn")]
+        values = [("RTSPPublish.inputs:renderProductPath", camera_prim)]
+        if not existing_render_product:
+            create_nodes.insert(1, ("RenderProduct", "isaacsim.core.nodes.IsaacCreateRenderProduct"))
+            connect = [
+                ("OnTick.outputs:tick", "RenderProduct.inputs:execIn"),
+                ("RenderProduct.outputs:execOut", "RTSPPublish.inputs:execIn"),
+                ("RenderProduct.outputs:renderProductPath", "RTSPPublish.inputs:renderProductPath"),
+            ]
+            values.insert(0, ("RenderProduct.inputs:cameraPrim", camera_prim))
         graph, _, _, _ = og.Controller.edit(
             {
                 "graph_path": graph_path,
@@ -181,21 +259,14 @@ class IsaacCameraPublisher:
                 "pipeline_stage": og.GraphPipelineStage.GRAPH_PIPELINE_STAGE_ONDEMAND,
             },
             {
-                keys.CREATE_NODES: [
-                    ("OnTick", "omni.graph.action.OnTick"),
-                    ("RenderProduct", "isaacsim.core.nodes.IsaacCreateRenderProduct"),
-                    ("RTSPPublish", "isaacsim.streaming.rtsp.RTSPCameraHelper"),
-                ],
-                keys.CONNECT: [
-                    ("OnTick.outputs:tick", "RenderProduct.inputs:execIn"),
-                    ("RenderProduct.outputs:execOut", "RTSPPublish.inputs:execIn"),
-                    ("RenderProduct.outputs:renderProductPath",
-                     "RTSPPublish.inputs:renderProductPath"),
-                ],
+                keys.CREATE_NODES: create_nodes,
+                keys.CONNECT: connect,
                 keys.SET_VALUES: [
-                    ("RenderProduct.inputs:cameraPrim", camera_prim),
-                    ("RenderProduct.inputs:width", self.width),
-                    ("RenderProduct.inputs:height", self.height),
+                    *values,
+                    *([] if existing_render_product else [
+                        ("RenderProduct.inputs:width", self.width),
+                        ("RenderProduct.inputs:height", self.height),
+                    ]),
                     ("RTSPPublish.inputs:port", port),
                     ("RTSPPublish.inputs:mountPath", mount_path),
                     ("RTSPPublish.inputs:useRawEncoding",
@@ -248,6 +319,7 @@ class IsaacCameraPublisher:
         from builtin_interfaces.msg import Time
         stamp = Time(sec=int(seconds), nanosec=int((seconds - int(seconds)) * 1e9))
         orientation = _quaternion_wxyz(pose.orientation)
+        self._last_capture = seconds
         for index, (camera, (image_publisher, info_publisher)) in enumerate(zip(self._cameras, self._publishers)):
             position = pose.position.copy()
             if self.mode == "stereo":
@@ -256,20 +328,27 @@ class IsaacCameraPublisher:
             # world-axis camera mode also defines +X as forward; using the
             # ROS mode here would incorrectly treat local +Z as forward.
             camera.set_world_pose(position=position, orientation=orientation, camera_axes="world")
-            self._last_capture = seconds
-            if image_publisher is not None:
-                data = camera.get_rgba()
-                if data is None:
-                    continue
+            data = camera.get_rgba() if self.mode == "mono" else None
+            if image_publisher is not None and data is not None:
                 image_publisher.publish(self._image_message(data, stamp, str(index)))
             info_publisher.publish(self._camera_info(stamp))
+            if self.mode == "mono" and self.transport in {"h264", "raw_and_h264", "rtsp_and_h264"}:
+                import omni.graph.core as og
+                og.Controller.evaluate_sync(self._h264_graphs[0])
+            if self.mode == "mono" and self.transport in {"rtsp", "rtsp_and_h264"}:
+                import omni.graph.core as og
+                og.Controller.evaluate_sync(self._rtsp_graphs[0])
+        if self.mode == "stereo":
+            import omni.graph.core as og
             if self.transport in {"h264", "raw_and_h264", "rtsp_and_h264"}:
-                import omni.graph.core as og
-                og.Controller.evaluate_sync(self._h264_graphs[
-                    0 if self.mode == "mono" else index
-                ])
+                og.Controller.evaluate_sync(self._h264_graphs[0])
             if self.transport in {"rtsp", "rtsp_and_h264"}:
-                import omni.graph.core as og
-                og.Controller.evaluate_sync(self._rtsp_graphs[
-                    0 if self.mode == "mono" else index
-                ])
+                og.Controller.evaluate_sync(self._rtsp_graphs[0])
+        if self._side_by_side_publisher is not None and self._tiled_sensor is not None:
+            tiled_data, _ = self._tiled_sensor.get_data("rgb", tiled=True)
+            if tiled_data is None:
+                return
+            side_by_side = np.asarray(tiled_data.numpy(), dtype=np.uint8)
+            self._side_by_side_publisher.publish(
+                self._image_message(side_by_side, stamp, "stereo")
+            )
