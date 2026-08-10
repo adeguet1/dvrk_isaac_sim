@@ -15,6 +15,7 @@ class IsaacCRTKWindow:
     """
 
     _STATE_COMMANDS = ("enable", "disable", "pause", "resume", "home", "unhome", "fault", "clear_fault")
+    _STATE_COMMAND_PLACEHOLDER = "..."
 
     def __init__(self, components: list[Any]) -> None:
         import omni.ui as ui
@@ -38,7 +39,10 @@ class IsaacCRTKWindow:
     def _add_component(self, component: Any) -> None:
         ui = self._ui
         name = component.config.name
-        with ui.CollapsableFrame(name, collapsed=False):
+        asset = component.config.raw.get("robot", {}).get("asset", {})
+        instrument = asset.get("instrument") if isinstance(asset, dict) else None
+        display_name = f"{name} ({instrument})" if instrument else name
+        with ui.CollapsableFrame(display_name, collapsed=False):
             with ui.VStack(spacing=4, height=0):
                 state_label = ui.Label("")
                 homed_label = ui.Label("")
@@ -55,15 +59,27 @@ class IsaacCRTKWindow:
                         model.add_value_changed_fn(lambda _model, arm=name: self._mark_dirty(arm))
                 with ui.HStack(spacing=5):
                     ui.Button("Apply joint targets", clicked_fn=lambda arm=name: self._apply_joints(arm))
-                    ui.Button("Home", clicked_fn=lambda arm=name: self._command_state(arm, "home"))
+                jaw = None
+                if component.config.type == "PSM":
+                    with ui.HStack(height=26, spacing=5):
+                        ui.Label("Jaw", width=100)
+                        jaw_measured = ui.Label("", width=95)
+                        jaw_model = ui.SimpleFloatModel(0.0)
+                        jaw_field = ui.FloatField(model=jaw_model, width=105)
+                        ui.Label("deg", width=35)
+                        jaw_model.add_value_changed_fn(lambda _model, arm=name: self._mark_dirty(arm))
+                        jaw = (jaw_measured, jaw_model, jaw_field)
+                    ui.Button("Apply jaw target", clicked_fn=lambda arm=name: self._apply_jaw(arm))
                 with ui.HStack(spacing=5):
                     ui.Label("Operating state", width=100)
-                    state_model = ui.ComboBox(0, *self._STATE_COMMANDS)
+                    state_model = ui.ComboBox(
+                        0, self._STATE_COMMAND_PLACEHOLDER, *self._STATE_COMMANDS
+                    )
                     state_model.model.add_item_changed_fn(
                         lambda _model, _item, arm=name, combo=state_model: self._combo_command(arm, combo)
                     )
                 self._fields[name] = {
-                    "state": state_label, "homed": homed_label, "joints": fields,
+                    "state": state_label, "homed": homed_label, "joints": fields, "jaw": jaw,
                 }
 
     def _mark_dirty(self, name: str) -> None:
@@ -82,8 +98,12 @@ class IsaacCRTKWindow:
         # Isaac Sim omni.ui ComboBox value models expose the selected item
         # index. Convert it to the CRTK command string before dispatch.
         index = combo.model.get_item_value_model().as_int
-        if 0 <= index < len(self._STATE_COMMANDS):
-            self._command_state(name, self._STATE_COMMANDS[index])
+        try:
+            if 1 <= index <= len(self._STATE_COMMANDS):
+                self._command_state(name, self._STATE_COMMANDS[index - 1])
+        finally:
+            # State commands are one-shot actions, not a persistent selection.
+            combo.model.get_item_value_model().set_value(0)
 
     def _apply_joints(self, name: str) -> None:
         component = self._component(name)
@@ -94,6 +114,15 @@ class IsaacCRTKWindow:
             value = model.as_float
             values.append(math.radians(value) if joint.type == "revolute" else value / 1000.0)
         if component.command_joint_position(values):
+            self._dirty.discard(name)
+
+    def _apply_jaw(self, name: str) -> None:
+        component = self._component(name)
+        controls = self._fields[name].get("jaw")
+        if component is None or controls is None:
+            return
+        _measured, model, _field = controls
+        if component.command_jaw_position(math.radians(model.as_float)):
             self._dirty.discard(name)
 
     def update(self) -> None:
@@ -126,6 +155,14 @@ class IsaacCRTKWindow:
                     measured_label.text = f"{measured_value:8.2f} {unit}"
                     if name not in self._dirty:
                         model.set_value(goal_value)
+                if controls["jaw"] is not None:
+                    jaw_measured, jaw_model, _jaw_field = controls["jaw"]
+                    jaw_position = component.jaw_position
+                    if jaw_position is not None:
+                        jaw_value = math.degrees(float(jaw_position))
+                        jaw_measured.text = f"{jaw_value:8.2f} deg"
+                        if name not in self._dirty:
+                            jaw_model.set_value(jaw_value)
         finally:
             self._refreshing = False
 

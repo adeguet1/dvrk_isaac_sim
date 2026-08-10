@@ -22,7 +22,7 @@ from .cartesian_frames import (
 )
 from .ros_messages import _pose_from_ros, _quaternion_xyzw
 from .command_validation import joint_positions_from_message, jaw_position_from_message
-from .ros_qos import transient_local_event_qos
+from .ros_qos import transient_local_event_qos, transient_local_latched_qos
 from .operating_state import CRTKOperatingState
 
 
@@ -33,6 +33,7 @@ class CRTKROSComponent:
         from crtk_msgs.msg import OperatingState, StringStamped
         from geometry_msgs.msg import PoseStamped, TwistStamped
         from sensor_msgs.msg import JointState
+        from std_msgs.msg import String
 
         self.node = node
         self.config = config
@@ -53,6 +54,9 @@ class CRTKROSComponent:
         self._frame_id = str(config.raw.get("robot", {}).get("cartesian", {}).get("reference_frame", config.parent_frame))
         self._cartesian_reference: CRTKComponent | None = None
         self._simulation_stamp = simulation_stamp
+        asset = config.raw.get("robot", {}).get("asset", {})
+        instrument = asset.get("instrument") if isinstance(asset, dict) else None
+        self._instrument_name = str(instrument) if instrument not in (None, "") else None
         self._cartesian_reference_frame = self._frame_id
         # Servo commands can arrive faster than the Isaac update loop. Keep
         # only the newest command and solve IK from the simulation thread.
@@ -85,6 +89,10 @@ class CRTKROSComponent:
         self.info_publisher = node.create_publisher(StringStamped, "info", 10)
         self.warning_publisher = node.create_publisher(StringStamped, "warning", 10)
         self.error_publisher = node.create_publisher(StringStamped, "error", 10)
+        self.tool_type_publisher = (
+            node.create_publisher(String, "tool_type", transient_local_latched_qos())
+            if config.type == "PSM" else None
+        )
 
         node.create_subscription(JointState, "move_jp", self._move_jp_callback, 10)
         node.create_subscription(JointState, "servo_jp", self._servo_jp_callback, 10)
@@ -102,6 +110,23 @@ class CRTKROSComponent:
         )
         self._publish_operating_state(self._event_stamp())
         self._publish_info("initialized; state is ENABLED")
+
+    def publish_tool_type(self) -> None:
+        """Publish the configured six-digit PSM tool type once.
+
+        The publisher is transient-local, so subscribers that join after the
+        simulation starts still receive the retained identifier.  It is not
+        published during component construction because that precedes the
+        Isaac timeline start.
+        """
+        if self.config.type != "PSM" or self._instrument_name is None:
+            return
+        from std_msgs.msg import String
+
+        message = String()
+        message.data = self._instrument_name
+        if self.tool_type_publisher is not None:
+            self.tool_type_publisher.publish(message)
 
     def set_simulation_stamp(self, stamp) -> None:
         """Set the simulation timestamp used by event messages.

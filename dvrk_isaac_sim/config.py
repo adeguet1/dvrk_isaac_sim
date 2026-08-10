@@ -72,7 +72,8 @@ class RobotConfig:
 
 def load_robot_config(path: str | Path, kinematics_manifest: str | Path | None = None,
                       base_position: Any | None = None,
-                      base_orientation_xyzw: Any | None = None) -> RobotConfig:
+                      base_orientation_xyzw: Any | None = None,
+                      instrument: str | None = None) -> RobotConfig:
     """Load and validate one robot YAML configuration."""
 
     source = Path(path)
@@ -82,6 +83,8 @@ def load_robot_config(path: str | Path, kinematics_manifest: str | Path | None =
         raise ValueError(f"{source}: expected a top-level 'robot' mapping")
 
     robot = document["robot"]
+    if instrument is not None:
+        robot.setdefault("asset", {})["instrument"] = str(instrument)
     robot_type = str(robot["type"]).upper() if "type" in robot else ""
     if robot_type not in {"PSM", "ECM"}:
         raise ValueError(f"{source}: robot.type must be PSM or ECM")

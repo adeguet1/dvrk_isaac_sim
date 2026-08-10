@@ -28,6 +28,7 @@ class CRTKROSNode:
         config = load_robot_config(Path(config_path))
         model = CRTKPSM(config) if config.type == "PSM" else CRTKECM(config)
         self.component = CRTKROSComponent(self._node, config, model)
+        self.component.publish_tool_type()
         rate = self._node.get_parameter("update_rate_hz").value
         self._node.create_timer(1.0 / float(rate), self._update)
         self._last_time = self._node.get_clock().now()

@@ -201,11 +201,12 @@ def main() -> int:
 
         cameras = []
 
-        def add_component(namespace: str, config_path: Path, frame: dict | None = None, manifest: Path | None = None):
+        def add_component(namespace: str, config_path: Path, frame: dict | None = None,
+                          manifest: Path | None = None, instrument: str | None = None):
             frame = frame or {}
             config = load_robot_config(
                 config_path, manifest,
-                frame.get("position"), frame.get("orientation_xyzw")
+                frame.get("position"), frame.get("orientation_xyzw"), instrument
             )
             if config.type == "PSM":
                 model = CRTKPSM(config)
@@ -236,7 +237,7 @@ def main() -> int:
         if scene_entries:
             for entry in scene_entries:
                 asset, manifest = _generated_variant(args, entry)
-                add_component(entry.name, entry.config_path, entry.frame, manifest)
+                add_component(entry.name, entry.config_path, entry.frame, manifest, entry.instrument)
 
         # PSM Cartesian CRTK topics are expressed in the moving ECM optical
         # frame, as on a dVRK system. Wire this after all components exist
@@ -264,6 +265,8 @@ def main() -> int:
         timeline = get_timeline_interface()
         _configure_fixed_timestep(timeline, args.simulation_rate_hz)
         timeline.play()
+        for _, component, _, _ in nodes:
+            component.publish_tool_type()
         simulation_time = max(0.0, float(timeline.get_current_time()))
         fixed_dt = 1.0 / args.simulation_rate_hz
         clock_publisher = nodes[0][0].create_publisher(Clock, "/clock", 10)
@@ -272,7 +275,6 @@ def main() -> int:
             print(f"  {entry.name} topics: /{entry.name}/measured_js, /{entry.name}/measured_cp, /{entry.name}/servo_jp", flush=True)
 
         while simulation_app.is_running():
-            simulation_app.update()
             playing = bool(timeline.is_playing())
             if playing:
                 simulation_time += fixed_dt
@@ -301,7 +303,16 @@ def main() -> int:
                     )
                 component.publish(stamp, valid=playing)
                 if camera is not None and playing:
-                    camera.publish(current_time, component.model.measured_cp())
+                    # Update the camera before the render tick below so the
+                    # captured frame uses the current ECM pose.
+                    camera.set_pose(component.model.measured_cp())
+
+            # Render after kinematic state and camera poses are current, then
+            # publish the rendered frame.
+            simulation_app.update()
+            for _, _, _, camera in ordered_nodes:
+                if camera is not None and playing:
+                    camera.publish(current_time)
             if ui_window is not None:
                 ui_window.update()
 

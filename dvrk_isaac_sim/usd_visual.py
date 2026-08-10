@@ -44,10 +44,11 @@ class CRTKUSDVisual:
             prim_path = f"{root}/{relative_prim}" if relative_prim else root
             operation = specification.get("operation")
             axis = str(specification.get("axis", "Z"))
+            motion_first = bool(specification.get("motion_before_static_transform", False))
             if operation == "rotate":
-                op = self._add_rotate(prim_path, axis)
+                op = self._add_rotate(prim_path, axis, motion_first)
             elif operation == "translate":
-                op = self._add_translate(prim_path, axis)
+                op = self._add_translate(prim_path, axis, motion_first)
             else:
                 raise RuntimeError(f"{manifest_path}: unsupported visual operation {operation!r} for {name}")
             self._visual_joints[name] = (op, float(specification.get("scale", 1.0)), specification.get("mimic"))
@@ -58,16 +59,33 @@ class CRTKUSDVisual:
             raise RuntimeError(f"USD visual link not found: {prim_path}")
         return self._UsdGeom.Xformable(prim)
 
-    def _add_rotate(self, prim_path: str, axis: str):
-        method = getattr(self._xform(prim_path), f"AddRotate{axis}Op")
-        return method(precision=self._UsdGeom.XformOp.PrecisionDouble, opSuffix="crtk")
+    @staticmethod
+    def _place_motion_first(xform, operation) -> None:
+        """Place a joint operation before importer-folded visual offsets."""
+        operation_name = operation.GetOpName()
+        ordered = [operation]
+        ordered.extend(op for op in xform.GetOrderedXformOps()
+                       if op.GetOpName() != operation_name)
+        xform.SetXformOpOrder(ordered)
 
-    def _add_translate(self, prim_path: str, axis: str):
+    def _add_rotate(self, prim_path: str, axis: str, motion_first: bool):
+        xform = self._xform(prim_path)
+        method = getattr(xform, f"AddRotate{axis}Op")
+        operation = method(precision=self._UsdGeom.XformOp.PrecisionDouble, opSuffix="crtk")
+        if motion_first:
+            self._place_motion_first(xform, operation)
+        return operation
+
+    def _add_translate(self, prim_path: str, axis: str, motion_first: bool):
         # Isaac/USD translation ops are vector-valued; the manifest axis selects
         # the component that receives the joint displacement.
-        return self._xform(prim_path).AddTranslateOp(
+        xform = self._xform(prim_path)
+        operation = xform.AddTranslateOp(
             precision=self._UsdGeom.XformOp.PrecisionDouble, opSuffix="crtk"
-        ), axis
+        )
+        if motion_first:
+            self._place_motion_first(xform, operation)
+        return operation, axis
 
     @staticmethod
     def _set_operation(operation, value: float) -> None:

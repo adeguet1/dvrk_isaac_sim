@@ -20,3 +20,13 @@ def transient_local_event_qos():
     qos.reliability = ReliabilityPolicy.RELIABLE
     qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
     return qos
+
+
+def transient_local_latched_qos():
+    """QoS for a single retained value, such as the instrument identifier."""
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+    qos = QoSProfile(depth=1)
+    qos.reliability = ReliabilityPolicy.RELIABLE
+    qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+    return qos

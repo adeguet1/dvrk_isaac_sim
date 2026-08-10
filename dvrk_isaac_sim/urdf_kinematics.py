@@ -136,10 +136,18 @@ def write_kinematics_manifest(urdf_path: str | Path, output_path: str | Path, mo
             "scale": float(axis[axis_index]),
             "mimic": joint["mimic"],
             "source_link": joint["child"],
+            # URDF applies joint motion after the joint origin but before a
+            # child link's visual offset.  Isaac's importer can fold that
+            # visual offset into the child Xform; in that case the motion op
+            # must be first in the USD stack to preserve the joint pivot.
+            "motion_before_static_transform": bool(
+                np.allclose(joint["origin_xyz"], 0.0)
+                and np.allclose(joint["origin_rpy"], 0.0)
+            ),
         }
 
     manifest = {
-        "format": 2,
+        "format": 3,
         "model": model,
         "tip_link": tip,
         "root_link": current,

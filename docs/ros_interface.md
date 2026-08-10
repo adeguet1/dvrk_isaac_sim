@@ -34,6 +34,11 @@ PSM1 + PSM2 + PSM3 + ECM
 
 Each PSM publishes under its own namespace. Base-frame configuration is currently loaded from the selected scene YAML profile. TF-based base-frame lookup is reserved for a future release.
 
+PSMs publish their six-digit instrument identifier once on `/<PSM>/tool_type` as
+`std_msgs/String` when the simulation starts. The topic uses reliable,
+transient-local QoS with depth 1, so late subscribers receive the retained
+identifier. ECM components do not publish this topic.
+
 ## 2. Supported topics
 
 ### PSM

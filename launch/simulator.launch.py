@@ -49,10 +49,11 @@ def _start_sim(context):
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 manifest = None
-            if isinstance(manifest, dict) and isinstance(manifest.get("visual"), dict):
+            if (isinstance(manifest, dict) and manifest.get("format", 0) >= 3
+                    and isinstance(manifest.get("visual"), dict)):
                 return
-            # Older manifests predate manifest-driven USD visual mappings.
-            # Regenerate them instead of allowing runtime visual failures.
+            # Older manifests lack the USD transform-order metadata required
+            # to preserve joints whose visual offsets were folded by Isaac.
         command = [str(isaac_python), str(converter), "--model", robot.name,
                    "--output-dir", str(generated_dir), "--asset-name", asset_name, "--force"]
         command.extend(["--instrument", variant] if robot.type == "PSM"

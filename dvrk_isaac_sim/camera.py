@@ -76,6 +76,7 @@ class IsaacCameraPublisher:
         if self.publish_rate <= 0.0:
             raise ValueError("camera.publish_rate_hz must be positive")
         self._last_capture = float("-inf")
+        self._pose_ready = False
         self._Image = Image
         self._CameraInfo = CameraInfo
         self._cameras = []
@@ -93,7 +94,7 @@ class IsaacCameraPublisher:
             camera_prim_path = f"/World/ECM/Camera{name.title() if mode == 'stereo' else ''}"
             camera = Camera(
                 prim_path=camera_prim_path,
-                name=f"ECM_camera_{name}", frequency=30,
+                name=f"ECM_camera_{name}", frequency=self.publish_rate,
                 resolution=(self.width, self.height),
                 orientation=np.asarray([1.0, 0.0, 0.0, 0.0]),
             )
@@ -313,21 +314,30 @@ class IsaacCameraPublisher:
         info.p = [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
         return info
 
-    def publish(self, seconds: float, pose: Pose) -> None:
-        if seconds - self._last_capture < 1.0 / self.publish_rate:
-            return
-        from builtin_interfaces.msg import Time
-        stamp = Time(sec=int(seconds), nanosec=int((seconds - int(seconds)) * 1e9))
+    def set_pose(self, pose: Pose) -> None:
+        """Apply the ECM pose before Isaac renders the next frame."""
         orientation = _quaternion_wxyz(pose.orientation)
-        self._last_capture = seconds
-        for index, (camera, (image_publisher, info_publisher)) in enumerate(zip(self._cameras, self._publishers)):
+        for index, camera in enumerate(self._cameras):
             position = pose.position.copy()
             if self.mode == "stereo":
                 position += pose.orientation[:, 0] * (self.baseline / 2.0) * (-1.0 if index == 0 else 1.0)
             # ECM_optical uses local +X as the viewing direction. Isaac's
-            # world-axis camera mode also defines +X as forward; using the
-            # ROS mode here would incorrectly treat local +Z as forward.
+            # world-axis camera mode also defines +X as forward.
             camera.set_world_pose(position=position, orientation=orientation, camera_axes="world")
+        self._pose_ready = True
+
+    def publish(self, seconds: float, pose: Pose | None = None) -> None:
+        """Publish the frame rendered with the latest pose."""
+        if seconds - self._last_capture < 1.0 / self.publish_rate:
+            return
+        if pose is not None:
+            self.set_pose(pose)
+        if not self._pose_ready:
+            return
+        from builtin_interfaces.msg import Time
+        stamp = Time(sec=int(seconds), nanosec=int((seconds - int(seconds)) * 1e9))
+        self._last_capture = seconds
+        for index, (camera, (image_publisher, info_publisher)) in enumerate(zip(self._cameras, self._publishers)):
             data = camera.get_rgba() if self.mode == "mono" else None
             if image_publisher is not None and data is not None:
                 image_publisher.publish(self._image_message(data, stamp, str(index)))
