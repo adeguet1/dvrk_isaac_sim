@@ -1,10 +1,112 @@
 from pathlib import Path
+import os
+import re
+import sys
+import warnings
 
 from setuptools import find_packages, setup
 
 
 package_name = "dvrk_isaac_sim"
 local_isaac_config = Path("share/isaac_sim.yaml")
+example_isaac_config = Path("share/isaac_sim.yaml.example")
+
+
+def _isaac_sim_dir_from_input(value: str) -> Path:
+    """Resolve an Isaac Sim root or source/build root to its python.sh dir."""
+    selected = Path(value).expanduser()
+    candidates = (
+        selected / "python.sh",
+        selected / "_build/linux-x86_64/release/python.sh",
+    )
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate.parent.resolve()
+    locations = "\n".join(f"  {candidate}" for candidate in candidates)
+    raise RuntimeError(
+        "ISAAC_SIM_DIR does not point to a usable Isaac Sim installation. "
+        "Expected an executable python.sh at one of:\n" + locations
+    )
+
+
+def _saved_isaac_sim_dir(path: Path) -> Path | None:
+    if not path.is_file():
+        return None
+    match = re.search(r'^isaac_sim_dir:\s*["\']?([^"\'\s]+)',
+                      path.read_text(encoding="utf-8"), re.MULTILINE)
+    if not match or match.group(1) in {"null", "None"}:
+        return None
+    return Path(match.group(1)).expanduser().resolve()
+
+
+def _workspace_root() -> Path | None:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "src").is_dir():
+            return parent
+    return None
+
+
+def _check_installed_configs(saved: Path) -> None:
+    workspace = _workspace_root()
+    if workspace is None:
+        return
+    for tree_name in ("build", "install"):
+        tree = workspace / tree_name
+        if not tree.is_dir():
+            continue
+        for config in tree.rglob("isaac_sim.yaml"):
+            installed = _saved_isaac_sim_dir(config)
+            if installed is not None and installed != saved:
+                warnings.warn(
+                    f"{config} contains Isaac Sim path {installed}, but the "
+                    f"source configuration contains {saved}. Rebuild the "
+                    "package to refresh that tree.",
+                    RuntimeWarning,
+                )
+
+
+def _configure_isaac_sim() -> None:
+    environment_value = os.environ.get("ISAAC_SIM_DIR", "").strip()
+    try:
+        environment_dir = (_isaac_sim_dir_from_input(environment_value)
+                           if environment_value else None)
+    except RuntimeError as error:
+        print(f"error: {error}", file=sys.stderr)
+        raise SystemExit(2)
+    saved_dir = _saved_isaac_sim_dir(local_isaac_config)
+
+    if environment_dir is not None:
+        if saved_dir is not None and environment_dir != saved_dir:
+            warnings.warn(
+                f"ISAAC_SIM_DIR={environment_dir} differs from the saved "
+                f"Isaac Sim path {saved_dir}; updating the saved path.",
+                RuntimeWarning,
+            )
+        local_isaac_config.write_text(
+            f'isaac_sim_dir: "{environment_dir}"\n', encoding="utf-8")
+        saved_dir = environment_dir
+    elif saved_dir is None:
+        print(
+            "error: Isaac Sim is not configured. Set ISAAC_SIM_DIR to the "
+            "Isaac Sim root directory and rerun colcon build. For example:\n\n"
+            "  export ISAAC_SIM_DIR=$HOME/devel/isaac-sim-6.0.1\n"
+            "  colcon build --symlink-install\n\n"
+            "The directory may contain python.sh directly or under "
+            "_build/linux-x86_64/release/.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    _check_installed_configs(saved_dir)
+
+
+# colcon runs setup.py with metadata/help commands before the actual build.
+# Do not require local machine configuration during those inspections; the
+# real build invocation below performs the validation and reports the useful
+# Isaac Sim-specific message.  ``--help develop`` is one such probe.
+if "--dry-run" not in sys.argv and not any(
+        argument.startswith("--help") for argument in sys.argv):
+    _configure_isaac_sim()
 config_files = [
     "share/arms/PSM.yaml",
     "share/arms/PSM1.yaml",
@@ -27,6 +129,7 @@ data_files = [
 ]
 if local_isaac_config.exists():
     data_files.append((f"share/{package_name}/share", [str(local_isaac_config)]))
+data_files.append((f"share/{package_name}/share", [str(example_isaac_config)]))
 
 setup(
     name=package_name,

@@ -33,7 +33,7 @@ def test_psm_instances_include_shared_defaults():
 
 
 def test_scene_resolution_and_scene_owned_variants():
-    config_path = ROOT / "share" / "isaac_sim.yaml"
+    config_path = ROOT / "share" / "isaac_sim.yaml.example"
     assert "PSM2_420093_mono.yaml" in available_scene_names(config_path)
     scene_path = resolve_scene_path(config_path, "PSM2_420093_mono.yaml")
     scene = load_scene(scene_path)
@@ -47,7 +47,7 @@ def test_scene_resolution_and_scene_owned_variants():
 
 
 def test_simulator_config_is_typed_and_scene_free_by_default():
-    config = load_simulator_config(ROOT / "share" / "isaac_sim.yaml")
+    config = load_simulator_config(ROOT / "share" / "isaac_sim.yaml.example")
     assert config.renderer == "RaytracedLighting"
     assert config.simulation_rate_hz == 120.0
     assert config.headless is False

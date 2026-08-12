@@ -3,6 +3,9 @@ build/
 install/
 log/
 
+# Generated from the local ISAAC_SIM_DIR by scripts/build.sh
+share/isaac_sim.yaml
+
 # Generated Isaac Sim assets
 .generated/
 config/isaac_sim.yaml

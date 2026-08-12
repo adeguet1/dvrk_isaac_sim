@@ -57,7 +57,9 @@ git clone /path/to/dvrk_isaac_sim
 
 cd /path/to/isaac_sim_ws/src/dvrk_isaac_sim
 export ISAAC_SIM_DIR=/path/to/isaac-sim
-./scripts/build.sh
+source /opt/ros/jazzy/setup.bash
+cd /path/to/isaac_sim_ws
+colcon build --symlink-install
 
 source /opt/ros/jazzy/setup.bash
 source /path/to/isaac_sim_ws/install/setup.bash

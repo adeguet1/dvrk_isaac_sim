@@ -93,7 +93,10 @@ def _start_sim(context):
 
 def generate_launch_description():
     package_share = Path(get_package_share_directory("dvrk_isaac_sim"))
-    default_config = str(package_share / "share" / "isaac_sim.yaml")
+    config_path = package_share / "share" / "isaac_sim.yaml"
+    if not config_path.is_file():
+        config_path = package_share / "share" / "isaac_sim.yaml.example"
+    default_config = str(config_path)
     return LaunchDescription([
         DeclareLaunchArgument("config", default_value=default_config,
                               description="Saved simulator config YAML"),

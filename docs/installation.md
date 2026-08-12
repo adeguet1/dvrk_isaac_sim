@@ -49,23 +49,17 @@ cd /path/to/isaac_sim_ws
 colcon build --symlink-install
 ```
 
-The build script asks for the Isaac Sim root directory when needed. It accepts either a direct installation directory or a source/build root containing `_build/linux-x86_64/release/python.sh`:
+The Python package setup validates the Isaac Sim installation during `colcon build`. On the first build, set `ISAAC_SIM_DIR`; it accepts either a direct installation directory or a source/build root containing `_build/linux-x86_64/release/python.sh`:
 
 ```bash
-cd /path/to/dvrk_isaac_sim
 export ISAAC_SIM_DIR=/path/to/isaac-sim
-./scripts/build.sh
+source /opt/ros/jazzy/setup.bash
+cd /path/to/isaac_sim_ws
+colcon build --symlink-install
 ```
 
-For example:
-
-```bash
-./scripts/build.sh
-# Enter: ~/devel/isaacsim-6.0.1
-```
-
-The script expands `~`, searches both locations, resolves the directory containing the executable `python.sh`, and saves it in the git-ignored `share/isaac_sim.yaml`.
-It then sources ROS 2 Jazzy and builds the complete workspace with Python 3.12.
+The setup step expands `~`, searches both locations, resolves the directory containing the executable `python.sh`, and saves it in the git-ignored `share/isaac_sim.yaml`. Later builds can omit `ISAAC_SIM_DIR` and use the saved path. If the variable is set to a different installation, setup warns and updates the saved path. The repository only tracks the machine-independent `share/isaac_sim.yaml.example` template.
+Source ROS 2 Jazzy before building. The package setup invokes the validation using the Python interpreter selected by colcon.
 
 ### Forcing Python 3.12
 
