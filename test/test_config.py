@@ -3,7 +3,10 @@ from pathlib import Path
 import numpy as np
 
 from dvrk_isaac_sim.config import load_robot_config
-from dvrk_isaac_sim.scene import available_scene_names, load_scene, load_simulator_config, resolve_scene_path
+from dvrk_isaac_sim.scene import (
+    available_scene_names, available_scene_paths, load_scene,
+    load_simulator_config, resolve_scene_path,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -38,7 +41,7 @@ def test_scene_resolution_and_scene_owned_variants():
     scene_path = resolve_scene_path(config_path, "PSM2_420093_mono.yaml")
     scene = load_scene(scene_path)
     assert scene.camera.mode == "mono"
-    assert scene.camera.as_dict().get("transport") == "rtsp_and_h264"
+    assert scene.camera.as_dict().get("transports") == ["ros_raw", "ros_compressed", "rtsp"]
     assert [(robot.name, robot.instrument, robot.endoscope) for robot in scene.robots] == [
         ("PSM2", "420093", None),
         ("ECM", None, "Si_straight"),
@@ -53,3 +56,12 @@ def test_simulator_config_is_typed_and_scene_free_by_default():
     assert config.headless is False
     assert config.scene is None
     assert config.generated_dir.is_absolute()
+
+
+def test_shipped_scenes_enable_all_camera_outputs_with_close_near_clip():
+    config_path = ROOT / "share" / "isaac_sim.yaml.example"
+    for scene_path in available_scene_paths(config_path):
+        camera = load_scene(scene_path).camera.as_dict()
+        assert camera["transports"] == ["ros_raw", "ros_compressed", "rtsp"]
+        assert camera["ros_compressed"]["quality"] == 85
+        assert camera["near_clip_m"] == 0.005

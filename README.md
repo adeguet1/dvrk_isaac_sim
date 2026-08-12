@@ -100,7 +100,7 @@ Start Isaac Sim first, source the Isaac Sim ROS 2 workspace, and launch the PSM/
 
 ### Haply
 
-Start the Haply service first and run each command in its own terminal. The Isaac scene publishes the PSM1, PSM2, PSM3, and ECM ROS interfaces; the dVRK system configuration connects Haply MTML/MTMR devices to those interfaces. The compressed ROS 2 topic uses native H.264, which `rqt_image_view` cannot decode, so use the RTSP GStreamer client for the endoscope view.
+Start the Haply service first and run each command in its own terminal. The Isaac scene publishes the PSM1, PSM2, PSM3, and ECM ROS interfaces; the dVRK system configuration connects Haply MTML/MTMR devices to those interfaces. The ECM JPEG topic `/ECM/image_raw/compressed` works with `rqt_image_view`; RTSP remains available for low-latency viewing.
 
 Terminal 1, Isaac Sim:
 
@@ -155,19 +155,20 @@ cd /path/to/isaac_sim_ws
 colcon build --symlink-install --packages-select dvrk_isaac_sim
 ```
 
-The combined test runner executes the Python tests, validates all YAML files,
-and then launches every configured scene headlessly through Isaac Sim. Run it
-from the package directory after building and sourcing the workspace:
+The combined test runner executes the Python tests and validates all YAML files
+by default. Run it from the package directory after building and sourcing the
+workspace:
 
 ```bash
 cd /path/to/isaac_sim_ws/src/dvrk_isaac_sim
 python3.12 scripts/tests
 ```
 
-To run only the tests that do not require Isaac Sim:
+To additionally run the headless Isaac Sim integration test for every configured
+scene:
 
 ```bash
-python3.12 scripts/tests --skip-isaac
+python3.12 scripts/tests --isaac
 ```
 
 You can restrict the Isaac Sim phase to selected scenes with repeated

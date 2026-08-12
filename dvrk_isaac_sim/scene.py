@@ -188,12 +188,27 @@ def load_scene(scene_path: str | Path) -> SceneConfig:
     )
     if camera.mode not in {"off", "mono", "stereo"}:
         raise ValueError(f"{source}: camera.mode must be off, mono, or stereo")
-    camera_transport = str(camera_document.get("transport", "raw")).lower()
-    if camera_transport not in {"raw", "h264", "raw_and_h264", "rtsp", "rtsp_and_h264"}:
+    if "transport" in camera_document:
+        raise ValueError(f"{source}: camera.transport was replaced by camera.transports")
+    camera_transports = camera_document.get("transports", ["ros_raw"])
+    if (not isinstance(camera_transports, list)
+            or not all(isinstance(item, str) for item in camera_transports)):
+        raise ValueError(f"{source}: camera.transports must be a list of strings")
+    if len(set(camera_transports)) != len(camera_transports):
+        raise ValueError(f"{source}: camera.transports must not contain duplicates")
+    unsupported_transports = set(camera_transports) - {"ros_raw", "ros_compressed", "rtsp"}
+    if unsupported_transports:
         raise ValueError(
-            f"{source}: camera.transport must be raw, h264, raw_and_h264, rtsp, or rtsp_and_h264"
+            f"{source}: unsupported camera transport(s): {', '.join(sorted(unsupported_transports))}"
         )
-    if camera_transport in {"rtsp", "rtsp_and_h264"}:
+    if "ros_compressed" in camera_transports:
+        compressed_document = camera_document.get("ros_compressed", {}) or {}
+        if not isinstance(compressed_document, dict):
+            raise ValueError(f"{source}: camera.ros_compressed must be a mapping")
+        quality = int(compressed_document.get("quality", 85))
+        if not 1 <= quality <= 100:
+            raise ValueError(f"{source}: camera.ros_compressed.quality must be between 1 and 100")
+    if "rtsp" in camera_transports:
         rtsp_document = camera_document.get("rtsp", {}) or {}
         if not isinstance(rtsp_document, dict):
             raise ValueError(f"{source}: camera.rtsp must be a mapping")

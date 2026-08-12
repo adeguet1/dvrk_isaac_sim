@@ -89,19 +89,21 @@ Mono scenes publish a rendered endoscope view through ROS 2 image transport:
 
 ```text
 /ECM/image_raw
+/ECM/image_raw/compressed
 /ECM/camera_info
 ```
 
-With `scene.camera.transport: raw` (the default), the simulator publishes this `sensor_msgs/Image` topic directly. `h264` uses Isaac Sim's native hardware-accelerated ROS 2 camera helper and publishes `/ECM/image_raw/compressed` with `format: h264`; `rtsp` uses Isaac Sim's built-in NVENC-backed RTSP server; `rtsp_and_h264` enables both RTSP and the ROS 2 H.264 topic.
+`camera.transports` independently enables `ros_raw`, `ros_compressed`, and `rtsp`. `ros_compressed` publishes a standard JPEG `sensor_msgs/CompressedImage` on `/ECM/image_raw/compressed`, compatible with `rqt_image_view` and other `image_transport` consumers. Raw and JPEG capture/encoding are skipped until their respective ROS topic has a subscriber. RTSP remains an explicitly enabled continuous stream.
 
-The raw or H.264 image topic is published at the configured camera rate (default 30 Hz), independently of the simulation update rate. Mono image and camera-info messages use the same simulation timestamp and the configured ECM optical frame ID. Set `scene.camera.mode` to `mono`, `stereo`, or `off` in the selected scene YAML. Stereo publishes one synchronized side-by-side image at `/ECM/image_raw`, with per-eye calibration on `/ECM/left/camera_info` and `/ECM/right/camera_info`.
+The ROS image topics are published at the configured camera rate (default 30 Hz), independently of the simulation update rate. Mono image and camera-info messages use the same simulation timestamp and the configured ECM optical frame ID. Set `scene.camera.mode` to `mono`, `stereo`, or `off` in the selected scene YAML. Stereo publishes one synchronized side-by-side image at `/ECM/image_raw` and its JPEG form at `/ECM/image_raw/compressed`, with per-eye calibration on `/ECM/left/camera_info` and `/ECM/right/camera_info`.
 
-For H.264 ROS consumers, use the Isaac Sim `isaac_compressed_image_decoder` package or another H.264 decoder. For network video, configure:
+For ROS and RTSP output together, configure:
 
 ```yaml
 scene:
   camera:
-    transport: rtsp
+    transports: [ros_raw, ros_compressed, rtsp]
+    ros_compressed: {quality: 85}
     rtsp:
       port: 8554
       mount_path: /ECM
@@ -193,17 +195,9 @@ When an ECM is present, PSM `measured_cp`, `setpoint_cp`, and `measured_cv` are 
 
 The dVRK system configuration should therefore use identity PSM base transforms with `reference_frame: ECM_view`; the patient-cart poses belong to Isaac Sim, not to the teleoperation system configuration. MTML and MTMR retain explicit `HRSV` base transforms so Haply motion follows the dVRK surgeon-display convention.
 
-For standard JPEG transport compatibility, run the ROS 2 republisher in a
-separate process while using `camera.transport: raw`:
-
-```bash
-ros2 run image_transport republish raw compressed --ros-args \
-  -r in:=/ECM/image_raw -r out:=/ECM/image_raw
-```
-
-This creates `/ECM/image_raw/compressed` with the usual JPEG transport. This
-path is convenient for ROS tools but adds a raw-image ROS 2 hop; use native
-H.264 or RTSP for high-rate video.
+Select `/ECM/image_raw` or `/ECM/image_raw/compressed` in `rqt_image_view`.
+The compressed topic is JPEG image_transport-compatible and needs no separate
+republisher.
 
 ### RTSP GStreamer client
 

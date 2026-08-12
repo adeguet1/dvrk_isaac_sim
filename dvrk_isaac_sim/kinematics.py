@@ -300,5 +300,5 @@ class CRTKECM(CRTKComponent):
 
 
 def main() -> None:
-    """Small smoke-test entry point installed with the ROS 2 package."""
+    """Small integration-test entry point installed with the ROS 2 package."""
     print("dvrk_isaac_sim kinematic core is available; launch integration is not implemented yet")

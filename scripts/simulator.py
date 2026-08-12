@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Isaac Sim 6.0 ROS 2/CRTK smoke test.
+"""Isaac Sim 6.0 ROS 2/CRTK simulator and integration test.
 
 This script intentionally uses no USD robot assets yet. It validates that:
 
@@ -39,6 +39,8 @@ def _arguments() -> argparse.Namespace:
                         help="override config simulation duration in seconds")
     parser.add_argument("--scene", type=Path, default=None,
                         help="override config and select a scene YAML")
+    parser.add_argument("--run-crtk-integration-test", action="store_true",
+                        help="run the test-only CRTK integration test")
     args = parser.parse_args()
 
     config_path = args.config.expanduser().resolve()
@@ -160,7 +162,7 @@ def main() -> int:
 
         enable_extension("isaacsim.ros2.bridge")
         enable_extension("isaacsim.ros2.nodes")
-        if str(args.scene_camera.get("transport", "raw")).lower() in {"rtsp", "rtsp_and_h264"}:
+        if "rtsp" in args.scene_camera.get("transports", ["ros_raw"]):
             enable_extension("isaacsim.streaming.rtsp")
         simulation_app.update()
         scene_entries = args.scene_model.robots
@@ -270,9 +272,10 @@ def main() -> int:
         simulation_time = max(0.0, float(timeline.get_current_time()))
         fixed_dt = 1.0 / args.simulation_rate_hz
         clock_publisher = nodes[0][0].create_publisher(Clock, "/clock", 10)
-        print("Isaac Sim CRTK smoke test running", flush=True)
-        for entry in scene_entries:
-            print(f"  {entry.name} topics: /{entry.name}/measured_js, /{entry.name}/measured_cp, /{entry.name}/servo_jp", flush=True)
+        if args.run_crtk_integration_test:
+            print("Isaac Sim CRTK integration test running", flush=True)
+            for entry in scene_entries:
+                print(f"  {entry.name} topics: /{entry.name}/measured_js, /{entry.name}/measured_cp, /{entry.name}/servo_jp", flush=True)
 
         while simulation_app.is_running():
             playing = bool(timeline.is_playing())

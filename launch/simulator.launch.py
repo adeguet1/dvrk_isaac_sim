@@ -70,6 +70,8 @@ def _start_sim(context):
     duration = LaunchConfiguration("duration").perform(context)
     if duration and float(duration) > 0.0:
         command.extend(["--duration", duration])
+    if LaunchConfiguration("run_crtk_integration_test").perform(context).lower() in {"true", "1", "yes"}:
+        command.append("--run-crtk-integration-test")
 
     ros_distro = LaunchConfiguration("ros_distro").perform(context) or simulator_config.ros_distro
     rmw_implementation = LaunchConfiguration("rmw_implementation").perform(context) or simulator_config.rmw_implementation
@@ -108,6 +110,8 @@ def generate_launch_description():
                               description="Optional headless override; otherwise use config"),
         DeclareLaunchArgument("duration", default_value="",
                               description="Optional duration override in seconds"),
+        DeclareLaunchArgument("run_crtk_integration_test", default_value="false",
+                              description="Run the test-only CRTK integration test"),
         DeclareLaunchArgument("ros_distro", default_value=""),
         DeclareLaunchArgument("rmw_implementation", default_value=""),
         OpaqueFunction(function=_start_sim),

@@ -13,12 +13,13 @@ scene:
     width: 1280
     height: 720
     horizontal_fov_deg: 60.0
-    near_clip_m: 0.01
+    near_clip_m: 0.005
     far_clip_m: 10.0
     encoding: rgba8
     baseline_m: 0.006
     publish_rate_hz: 30.0
-    transport: rtsp_and_h264
+    transports: [ros_raw, ros_compressed, rtsp]
+    ros_compressed: {quality: 85}
     rtsp: {port: 8554, mount_path: /ECM, encoding: h264}
   robots:
     - config: share/arms/PSM1.yaml

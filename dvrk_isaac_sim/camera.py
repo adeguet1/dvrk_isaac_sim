@@ -23,11 +23,12 @@ class IsaacCameraPublisher:
     """Create an Isaac camera and publish its rendered frames as ROS images.
 
     ``mono`` publishes ``/<ECM>/image_raw`` and ``/<ECM>/camera_info``.
-    ``stereo`` publishes the corresponding ``left`` and ``right`` subtopics,
-    plus a synchronized side-by-side image on ``image_raw``.
-    The scene camera ``transport`` can be ``raw`` (the default), ``h264``,
-    ``raw_and_h264``, ``rtsp``, or ``rtsp_and_h264``. H.264 uses Isaac Sim's native ROS 2
-    camera helper; RTSP uses Isaac Sim's built-in RTSPCameraHelper.
+    ``stereo`` publishes per-eye camera information plus a synchronized
+    side-by-side image on ``image_raw``.
+    Scene camera ``transports`` independently select ``ros_raw``,
+    ``ros_compressed`` (standard JPEG image_transport), and ``rtsp``.
+    ROS image encoding is only performed when the corresponding topic has a
+    subscriber; RTSP uses Isaac Sim's built-in RTSPCameraHelper.
     The camera pose follows the ECM measured optical pose and is independent of
     any ECM mesh, so the ECM can remain a kinematic-only component.
     """
@@ -37,7 +38,7 @@ class IsaacCameraPublisher:
         if mode not in {"mono", "stereo"}:
             raise ValueError(f"unsupported camera mode: {mode}")
         from isaacsim.sensors.camera import Camera
-        from sensor_msgs.msg import CameraInfo, Image
+        from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 
         camera_config = dict(config.raw.get("robot", {}).get("camera", {}))
         camera_config.update(scene_camera or {})
@@ -51,14 +52,27 @@ class IsaacCameraPublisher:
         self.encoding = str(camera_config.get("encoding", "rgba8"))
         self.baseline = float(camera_config.get("baseline_m", 0.006))
         self.fov = math.radians(float(camera_config.get("horizontal_fov_deg", 60.0)))
-        self.near = float(camera_config.get("near_clip_m", 0.01))
+        self.near = float(camera_config.get("near_clip_m", 0.005))
         self.far = float(camera_config.get("far_clip_m", 10.0))
         self.publish_rate = float(camera_config.get("publish_rate_hz", 30.0))
-        self.transport = str(camera_config.get("transport", "raw")).lower()
-        if self.transport not in {"raw", "h264", "raw_and_h264", "rtsp", "rtsp_and_h264"}:
-            raise ValueError(
-                "camera.transport must be raw, h264, raw_and_h264, rtsp, or rtsp_and_h264"
-            )
+        if "transport" in camera_config:
+            raise ValueError("camera.transport was replaced by camera.transports")
+        self.transports = camera_config.get("transports", ["ros_raw"])
+        if (not isinstance(self.transports, list)
+                or not all(isinstance(item, str) for item in self.transports)):
+            raise ValueError("camera.transports must be a list of strings")
+        if len(set(self.transports)) != len(self.transports):
+            raise ValueError("camera.transports must not contain duplicates")
+        unsupported_transports = set(self.transports) - {"ros_raw", "ros_compressed", "rtsp"}
+        if unsupported_transports:
+            raise ValueError("unsupported camera transport(s): " +
+                             ", ".join(sorted(unsupported_transports)))
+        compressed_config = camera_config.get("ros_compressed", {}) or {}
+        if not isinstance(compressed_config, dict):
+            raise ValueError("camera.ros_compressed must be a mapping")
+        self.jpeg_quality = int(compressed_config.get("quality", 85))
+        if not 1 <= self.jpeg_quality <= 100:
+            raise ValueError("camera.ros_compressed.quality must be between 1 and 100")
         rtsp_config = camera_config.get("rtsp", {}) or {}
         if not isinstance(rtsp_config, dict):
             raise ValueError("camera.rtsp must be a mapping")
@@ -78,15 +92,19 @@ class IsaacCameraPublisher:
         self._last_capture = float("-inf")
         self._pose_ready = False
         self._Image = Image
+        self._CompressedImage = CompressedImage
         self._CameraInfo = CameraInfo
         self._cameras = []
         camera_prim_paths = []
         self._publishers = []
         self._side_by_side_publisher = (
             node.create_publisher(Image, "image_raw", 10)
-            if mode == "stereo" else None
+            if mode == "stereo" and "ros_raw" in self.transports else None
         )
-        self._h264_graphs = []
+        self._side_by_side_compressed_publisher = (
+            node.create_publisher(CompressedImage, "image_raw/compressed", 10)
+            if mode == "stereo" and "ros_compressed" in self.transports else None
+        )
         self._rtsp_graphs = []
         names = ["mono"] if mode == "mono" else ["left", "right"]
         for name in names:
@@ -109,14 +127,12 @@ class IsaacCameraPublisher:
             self._cameras.append(camera)
             self._publishers.append((
                 node.create_publisher(Image, f"image_raw{suffix}", 10)
-                if mode == "mono" and self.transport in {"raw", "raw_and_h264"} else None,
+                if mode == "mono" and "ros_raw" in self.transports else None,
+                node.create_publisher(CompressedImage, f"image_raw{suffix}/compressed", 10)
+                if mode == "mono" and "ros_compressed" in self.transports else None,
                 node.create_publisher(CameraInfo, f"camera_info{suffix}", 10),
             ))
-            if mode == "mono" and self.transport in {"h264", "raw_and_h264", "rtsp_and_h264"}:
-                self._h264_graphs.append(
-                    self._create_h264_graph(camera_prim_path, name, suffix)
-                )
-            if mode == "mono" and self.transport in {"rtsp", "rtsp_and_h264"}:
+            if mode == "mono" and "rtsp" in self.transports:
                 self._rtsp_graphs.append(
                     self._create_rtsp_graph(camera_prim_path, name, index=len(self._rtsp_graphs))
                 )
@@ -133,13 +149,7 @@ class IsaacCameraPublisher:
             self._tiled_render_product_path = str(
                 self._tiled_sensor.render_product.GetPath()
             )
-            if self.transport in {"h264", "raw_and_h264", "rtsp_and_h264"}:
-                self._h264_graphs.append(
-                    self._create_h264_graph(
-                        self._tiled_render_product_path, "stereo", "", True
-                    )
-                )
-            if self.transport in {"rtsp", "rtsp_and_h264"}:
+            if "rtsp" in self.transports:
                 self._rtsp_graphs.append(
                     self._create_rtsp_graph(
                         self._tiled_render_product_path, "stereo", 0, True
@@ -160,7 +170,7 @@ class IsaacCameraPublisher:
                 f"ECM tiled camera: render_product={self._tiled_render_product_path}, "
                 f"tiled_resolution={self.width * 2}x{self.height}"
             )
-        if self.transport in {"rtsp", "rtsp_and_h264"}:
+        if "rtsp" in self.transports:
             node.get_logger().info(
                 "ECM GStreamer RTSP: "
                 f"url=rtsp://<host>:{self.rtsp_port}{self.rtsp_mount_path}, "
@@ -169,66 +179,8 @@ class IsaacCameraPublisher:
             )
         elif mode == "mono":
             node.get_logger().info(
-                f"ECM GStreamer RTSP: disabled (transport={self.transport})"
+                f"ECM GStreamer RTSP: disabled (transports={self.transports})"
             )
-
-    def _create_h264_graph(self, camera_prim: str, name: str, suffix: str,
-                           existing_render_product: bool = False):
-        """Create an on-demand native Isaac H.264 camera graph.
-
-        The graph is configured from Python, while image capture, hardware
-        encoding, and ROS 2 publication are performed by Isaac Sim's native
-        ROS 2 camera extension. On-demand evaluation lets this class retain
-        ownership of the configured camera publication rate.
-        """
-        import omni.graph.core as og
-        import usdrt.Sdf
-
-        graph_path = f"/World/CRTKROS/{self.node.get_name()}_{name}_H264"
-        keys = og.Controller.Keys
-        create_nodes = [
-            ("OnTick", "omni.graph.action.OnTick"),
-            ("H264Publish", "isaacsim.ros2.bridge.ROS2CameraHelper"),
-        ]
-        connect = [("OnTick.outputs:tick", "H264Publish.inputs:execIn")]
-        values = [
-            ("H264Publish.inputs:renderProductPath", camera_prim)
-        ]
-        if not existing_render_product:
-            create_nodes.insert(1, ("RenderProduct", "isaacsim.core.nodes.IsaacCreateRenderProduct"))
-            connect = [
-                ("OnTick.outputs:tick", "RenderProduct.inputs:execIn"),
-                ("RenderProduct.outputs:execOut", "H264Publish.inputs:execIn"),
-                ("RenderProduct.outputs:renderProductPath", "H264Publish.inputs:renderProductPath"),
-            ]
-            values.insert(0, ("RenderProduct.inputs:cameraPrim", [usdrt.Sdf.Path(camera_prim)]))
-        graph, _, _, _ = og.Controller.edit(
-            {
-                "graph_path": graph_path,
-                "evaluator_name": "push",
-                "pipeline_stage": og.GraphPipelineStage.GRAPH_PIPELINE_STAGE_ONDEMAND,
-            },
-            {
-                keys.CREATE_NODES: create_nodes,
-                keys.CONNECT: connect,
-                keys.SET_VALUES: [
-                    *values,
-                    *([] if existing_render_product else [
-                        ("RenderProduct.inputs:width", self.width),
-                        ("RenderProduct.inputs:height", self.height),
-                    ]),
-                    ("H264Publish.inputs:topicName", "image_raw/compressed"),
-                    ("H264Publish.inputs:type", "rgb_h264"),
-                    ("H264Publish.inputs:nodeNamespace",
-                     f"/{self.node.get_namespace().strip('/')}{suffix}"),
-                    ("H264Publish.inputs:frameId", self.frame_id),
-                    ("H264Publish.inputs:queueSize", 2),
-                    ("H264Publish.inputs:resetSimulationTimeOnStop", True),
-                ],
-            },
-        )
-        og.Controller.evaluate_sync(graph)
-        return graph
 
     def _create_rtsp_graph(self, camera_prim: str, name: str, index: int,
                            existing_render_product: bool = False):
@@ -299,6 +251,27 @@ class IsaacCameraPublisher:
         message.data = data.tobytes()
         return message
 
+    def _compressed_image_message(self, data: np.ndarray, stamp):
+        """Encode a standard JPEG CompressedImage for image_transport users."""
+        from io import BytesIO
+        from PIL import Image as PILImage
+
+        rgb = np.asarray(data, dtype=np.uint8)
+        if rgb.ndim == 2:
+            rgb = np.repeat(rgb[:, :, None], 3, axis=2)
+        elif rgb.shape[2] >= 3:
+            rgb = rgb[:, :, :3]
+        encoded = BytesIO()
+        PILImage.fromarray(rgb, mode="RGB").save(
+            encoded, format="JPEG", quality=self.jpeg_quality
+        )
+        message = self._CompressedImage()
+        message.header.stamp = stamp
+        message.header.frame_id = self.frame_id
+        message.format = "rgb8; jpeg compressed rgb8"
+        message.data = encoded.getvalue()
+        return message
+
     def _camera_info(self, stamp):
         info = self._CameraInfo()
         info.header.stamp = stamp
@@ -337,28 +310,46 @@ class IsaacCameraPublisher:
         from builtin_interfaces.msg import Time
         stamp = Time(sec=int(seconds), nanosec=int((seconds - int(seconds)) * 1e9))
         self._last_capture = seconds
-        for index, (camera, (image_publisher, info_publisher)) in enumerate(zip(self._cameras, self._publishers)):
-            data = camera.get_rgba() if self.mode == "mono" else None
-            if image_publisher is not None and data is not None:
+        for index, (camera, (image_publisher, compressed_publisher, info_publisher)) in enumerate(
+                zip(self._cameras, self._publishers)):
+            needs_image = (
+                (image_publisher is not None and image_publisher.get_subscription_count() > 0)
+                or (compressed_publisher is not None
+                    and compressed_publisher.get_subscription_count() > 0)
+            )
+            data = camera.get_rgba() if self.mode == "mono" and needs_image else None
+            if image_publisher is not None and data is not None and image_publisher.get_subscription_count() > 0:
                 image_publisher.publish(self._image_message(data, stamp, str(index)))
-            info_publisher.publish(self._camera_info(stamp))
-            if self.mode == "mono" and self.transport in {"h264", "raw_and_h264", "rtsp_and_h264"}:
-                import omni.graph.core as og
-                og.Controller.evaluate_sync(self._h264_graphs[0])
-            if self.mode == "mono" and self.transport in {"rtsp", "rtsp_and_h264"}:
+            if (compressed_publisher is not None and data is not None
+                    and compressed_publisher.get_subscription_count() > 0):
+                compressed_publisher.publish(self._compressed_image_message(data, stamp))
+            if info_publisher.get_subscription_count() > 0:
+                info_publisher.publish(self._camera_info(stamp))
+            if self.mode == "mono" and "rtsp" in self.transports:
                 import omni.graph.core as og
                 og.Controller.evaluate_sync(self._rtsp_graphs[0])
         if self.mode == "stereo":
             import omni.graph.core as og
-            if self.transport in {"h264", "raw_and_h264", "rtsp_and_h264"}:
-                og.Controller.evaluate_sync(self._h264_graphs[0])
-            if self.transport in {"rtsp", "rtsp_and_h264"}:
+            if "rtsp" in self.transports:
                 og.Controller.evaluate_sync(self._rtsp_graphs[0])
-        if self._side_by_side_publisher is not None and self._tiled_sensor is not None:
+        side_by_side_needed = (
+            (self._side_by_side_publisher is not None
+             and self._side_by_side_publisher.get_subscription_count() > 0)
+            or (self._side_by_side_compressed_publisher is not None
+                and self._side_by_side_compressed_publisher.get_subscription_count() > 0)
+        )
+        if side_by_side_needed and self._tiled_sensor is not None:
             tiled_data, _ = self._tiled_sensor.get_data("rgb", tiled=True)
             if tiled_data is None:
                 return
             side_by_side = np.asarray(tiled_data.numpy(), dtype=np.uint8)
-            self._side_by_side_publisher.publish(
-                self._image_message(side_by_side, stamp, "stereo")
-            )
+            if (self._side_by_side_publisher is not None
+                    and self._side_by_side_publisher.get_subscription_count() > 0):
+                self._side_by_side_publisher.publish(
+                    self._image_message(side_by_side, stamp, "stereo")
+                )
+            if (self._side_by_side_compressed_publisher is not None
+                    and self._side_by_side_compressed_publisher.get_subscription_count() > 0):
+                self._side_by_side_compressed_publisher.publish(
+                    self._compressed_image_message(side_by_side, stamp)
+                )

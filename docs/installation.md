@@ -148,7 +148,7 @@ cd /path/to/isaac-sim
 
 The same rule applies to any future project-specific ROS 2 messages. They must be built for Python 3.12 and be visible through the sourced workspace.
 
-## ROS 2 adapter smoke test
+## ROS 2 adapter integration test
 
 The current backend-independent ROS adapter can be run for one configured component:
 
@@ -162,7 +162,7 @@ ros2 run dvrk_isaac_sim dvrk_isaac_sim_ros \
   -p robot_config:=/path/to/dvrk_isaac_sim/share/arms/PSM1.yaml
 ```
 
-The Isaac Sim smoke test below uses the same sourced environment to launch the simulator and its in-process CRTK ROS adapter.
+The Isaac Sim integration test below uses the same sourced environment to launch the simulator and its in-process CRTK ROS adapter.
 
 For the complete local test sequence, use the repository test runner after
 building and sourcing the workspace:
@@ -172,9 +172,9 @@ cd /path/to/isaac_sim_ws/src/dvrk_isaac_sim
 python3.12 scripts/tests
 ```
 
-This runs the pure-Python tests, configuration validation, and a short
-headless Isaac Sim launch for every scene. Use
-`python3.12 scripts/tests --skip-isaac` when Isaac Sim is unavailable.
+This runs the pure-Python tests and configuration validation. The headless
+Isaac Sim integration tests are opt-in with
+`python3.12 scripts/tests --isaac`.
 
 ## USD asset conversion
 
@@ -246,16 +246,15 @@ ros2 launch dvrk_isaac_sim simulator.launch.py \
 ```
 
 Set `camera.mode` to `mono`, `stereo`, or `off` in the scene YAML. Set
-`camera.transport` to `raw` (default), `h264`, `raw_and_h264`, `rtsp`, or `rtsp_and_h264`.
-The `h264` option uses Isaac Sim's native hardware-accelerated ROS 2 camera
-publisher and publishes `sensor_msgs/msg/CompressedImage` with
-`format: h264` on `image_raw/compressed`. `raw_and_h264` publishes both
-forms but performs two camera captures. The `rtsp` and `rtsp_and_h264` options use Isaac Sim's
-built-in NVENC-backed RTSP server. Configure it with:
+`camera.transports` to any combination of `ros_raw`, `ros_compressed`, and
+`rtsp`. `ros_compressed` publishes standard JPEG on `image_raw/compressed`,
+which works with `rqt_image_view`; the ROS image paths are subscriber-gated.
+RTSP uses Isaac Sim's NVENC-backed server and is enabled continuously. Configure all outputs with:
 ```yaml
 scene:
   camera:
-    transport: rtsp
+    transports: [ros_raw, ros_compressed, rtsp]
+    ros_compressed: {quality: 85}
     rtsp:
       port: 8554
       mount_path: /ECM
@@ -266,8 +265,6 @@ Set `renderer` to the desired Isaac Sim renderer in the config YAML. Set
 Mono publishes `/ECM/image_raw` and `/ECM/camera_info`. Stereo publishes one
 synchronized side-by-side image on `/ECM/image_raw`, with twice the configured
 width; RTSP streams that same tiled image on the configured `/ECM` mount path.
-H.264 image consumers should use the `isaac_compressed_image_decoder` package
-or another H.264 decoder.
 Missing USD/URDF conversion artifacts are generated automatically in the
 configured `generated_dir`.
 

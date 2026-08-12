@@ -15,7 +15,7 @@ The repository now has:
 - manifest-driven visual-only USD updates, mono/stereo ECM image publication, and GUI monitoring;
 - workspace-root `.generated/isaacsim-6.0` asset caching;
 - `simulator.launch.py`, `simulator.py`, configuration validation, and the combined `scripts/tests` runner;
-- 16 pure-Python tests plus headless Isaac Sim scene smoke tests.
+- 16 pure-Python tests plus headless Isaac Sim scene integration tests.
 
 Version 1 does not require backward-compatible code or YAML aliases. Acronyms
 remain uppercase in APIs and filenames: `CRTK`, `PSM`, `ECM`, `USD`, and `URDF`.
@@ -72,7 +72,7 @@ remain uppercase in APIs and filenames: `CRTK`, `PSM`, `ECM`, `USD`, and `URDF`.
 - Use the configured camera frequency for Isaac camera creation and publication.
 - Verify mono and stereo calibration values against the scene YAML.
 - Verify tiled stereo image dimensions, calibration topics, and RTSP output.
-- Keep JPEG `image_transport` as a compatibility path; use native H.264 or RTSP for high-rate video.
+- Provide JPEG `image_transport` for interoperable ROS video; use RTSP for high-rate video.
 - Add image timestamp and frame-consistency tests.
 - Add a low-rate/headless camera test profile that checks image dimensions, encoding, and non-empty frames.
 - Add a diagnostic mode that reports camera pose and optical/view axes when the image is blank.

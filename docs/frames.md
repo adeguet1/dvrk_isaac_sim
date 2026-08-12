@@ -59,7 +59,7 @@ The simulator renders the endoscope perspective from a camera attached to `ECM_o
 
 The rendering pipeline provides configurable image dimensions, field of view, clipping planes, simulation-time timestamps, and camera calibration information. Stereo uses two cameras with a configurable baseline, packed into one 1x2 tiled render product.
 
-ROS image publication uses `image_transport` conventions. Raw image and camera information are the stable base interfaces; native H.264 and RTSP are optional transports.
+ROS image publication uses `image_transport` conventions. Raw image, JPEG compressed image, and camera information are the ROS interfaces; RTSP is an optional network-video transport.
 
 The simulator publishes these base topics:
 

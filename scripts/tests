@@ -40,8 +40,8 @@ def main() -> int:
         help="simulator configuration YAML",
     )
     parser.add_argument(
-        "--skip-isaac", action="store_true",
-        help="run Python/configuration tests only",
+        "--isaac", action="store_true",
+        help="also run the headless Isaac Sim integration tests",
     )
     parser.add_argument(
         "--scene", action="append",
@@ -60,21 +60,21 @@ def main() -> int:
         "configuration validation",
     )
 
-    if args.skip_isaac:
-        print("\nIsaac Sim tests skipped by request.", flush=True)
+    if not args.isaac:
+        print("\nIsaac Sim integration tests skipped by default (use --isaac to run them).", flush=True)
         return 0
 
     simulator = load_simulator_config(config_path)
     if simulator.isaac_sim_dir is None:
         raise RuntimeError(
             f"{config_path}: isaac_sim_dir is required for headless tests; "
-            "use --skip-isaac to run Python tests only"
+            "use --isaac to run the Isaac Sim tests"
         )
     isaac_python = simulator.isaac_sim_dir / "python.sh"
     if not isaac_python.is_file():
         raise FileNotFoundError(
             f"Isaac Sim python.sh not found: {isaac_python}; "
-            "use --skip-isaac to run Python tests only"
+            "use --isaac to run the Isaac Sim tests"
         )
 
     scenes = args.scene or list(available_scene_names(config_path))
@@ -86,7 +86,7 @@ def main() -> int:
             [
                 "ros2", "launch", "dvrk_isaac_sim", "simulator.launch.py",
                 f"config:={config_path}", f"scene:={scene}",
-                "headless:=true", "duration:=0.25",
+                "headless:=true", "duration:=0.25", "run_crtk_integration_test:=true",
             ],
             f"headless Isaac Sim scene: {scene}",
         )
