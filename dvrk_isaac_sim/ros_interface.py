@@ -306,6 +306,21 @@ class CRTKROSComponent:
         self._publish_motion_edges()
         return True
 
+    def command_cartesian_position(self, pose: Pose) -> bool:
+        """Apply a GUI Cartesian target through the CRTK move_cp path."""
+        if not self._motion_allowed("GUI Cartesian command"):
+            return False
+        result = self.model.move_cp(pose)
+        if not result.success:
+            self._publish_warning(f"{self.config.name} rejected GUI move_cp: {result.message}")
+            self.node.get_logger().warning(
+                f"{self.config.name} rejected GUI move_cp: {result.message}"
+            )
+            self._publish_motion_failure()
+            return False
+        self._publish_motion_edges()
+        return True
+
     def _state_command_callback(self, message) -> None:
         success, error = self._operating_state.command(message.string)
         if not success:
