@@ -18,7 +18,7 @@ scene:
       kind: cube
       position: [0.0, 0.0, 0.57]
       orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
-      size: [0.1, 0.1, 0.1]
+      size: [0.000001, 0.000001, 0.000001]
       dynamic: true
       mass: 0.2
       color: [1.0, 0.2, 0.2, 1.0]
