@@ -14,11 +14,6 @@
                     [0.0, 0.0, 0.0, 1.0]
                 ]
             }
-        },
-        {
-            "name": "MTML",
-            "base_serial": "069E",
-            "stylus_serial": "1606"
         }
     ]
 }
