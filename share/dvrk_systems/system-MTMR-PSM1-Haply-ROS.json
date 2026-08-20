@@ -1,0 +1,66 @@
+{
+    "$id": "dvrk-system.schema.json",
+    "$version": "1",
+    "component_manager": {
+        "components": [
+            {
+                "shared-library": "sawHaplyService",
+                "class-name": "mtsHaply",
+                "constructor-arg": {
+                    "Name": "Haply"
+                },
+                "configure-parameter": "sawHaplyService-JHU-Imerse-0699-069E.json"
+            },
+            {
+                "shared-library": "dvrk_arm_from_ros",
+                "class-name": "dvrk_psm_from_ros",
+                "constructor-arg": {
+                    "Name": "PSM1",
+                    "Period": 0.01
+                }
+            }
+        ]
+    },
+    "arms": [
+        {
+            "name": "MTMR",
+            "type": "MTM_GENERIC",
+            "component": "Haply",
+            "interface": "MTMR",
+            "base_frame": {
+                "reference_frame": "HRSV",
+                "transform": [
+                    [-1.0, 0.0, 0.0, -0.18],
+                    [0.0, 0.866025404, 0.5, 0.4],
+                    [0.0, 0.5, -0.866025404, 0.475],
+                    [0.0, 0.0, 0.0, 1.0]
+                ]
+            }
+        },
+        {
+            "name": "PSM1",
+            "type": "PSM_GENERIC",
+            "component": "PSM1",
+            "interface": "PSM1",
+            "skip_ROS_bridge": true
+        }
+    ],
+    "consoles": [
+        {
+            "name": "console",
+            "input_type": "SIMULATED",
+            "teleop_PSMs": [
+                {
+                    "MTM": "MTMR",
+                    "PSM": "PSM1",
+                    "configure_parameter": {
+                        "MTM_is_haptic": true,
+                        "align_MTM": false,
+                        "start_gripper_threshold": 0.0,
+                        "scale": 0.4
+                    }
+                }
+            ]
+        }
+    ]
+}
