@@ -46,13 +46,77 @@ class SceneRobot:
 
 
 @dataclass(frozen=True)
+class SceneProp:
+    name: str
+    kind: str
+    position: tuple[float, float, float]
+    orientation_xyzw: tuple[float, float, float, float]
+    size: tuple[float, float, float]
+    static: bool
+    dynamic: bool
+    mass: float | None = None
+    color: tuple[float, float, float, float] | None = None
+
+
+@dataclass(frozen=True)
 class SceneConfig:
     path: Path
     name: str
     base_frame_provider: str
     frames: dict[str, dict[str, Any]]
     robots: tuple[SceneRobot, ...]
+    props: tuple[SceneProp, ...]
     camera: SceneCamera
+
+
+def merge_scene_environment(scene: SceneConfig, environment: SceneConfig) -> SceneConfig:
+    """Overlay environment props onto a base scene.
+
+    The base scene owns robot selection, frames, and camera settings. The
+    environment contributes additional props and may add robots or frames when
+    they do not conflict with the base scene.
+    """
+    combined_frames = {name: dict(frame) for name, frame in scene.frames.items()}
+    for name, frame in environment.frames.items():
+        if name in combined_frames:
+            raise ValueError(
+                f"Cannot overlay environment {environment.path} on {scene.path}: "
+                f"duplicate frame entry {name}"
+            )
+        combined_frames[name] = dict(frame)
+
+    combined_robots = list(scene.robots)
+    robot_names = {robot.name for robot in scene.robots}
+    for robot in environment.robots:
+        if robot.name in robot_names:
+            raise ValueError(
+                f"Cannot overlay environment {environment.path} on {scene.path}: "
+                f"duplicate robot {robot.name}"
+            )
+        robot_names.add(robot.name)
+        combined_robots.append(robot)
+
+    prop_names = {prop.name for prop in scene.props}
+    combined_props = list(scene.props)
+    for prop in environment.props:
+        if prop.name in prop_names or prop.name in robot_names:
+            raise ValueError(
+                f"Cannot overlay environment {environment.path} on {scene.path}: "
+                f"duplicate prop {prop.name}"
+            )
+        prop_names.add(prop.name)
+        combined_props.append(prop)
+
+    combined_name = scene.name if environment.name == scene.name else f"{scene.name}+{environment.name}"
+    return SceneConfig(
+        path=scene.path,
+        name=combined_name,
+        base_frame_provider=scene.base_frame_provider,
+        frames=combined_frames,
+        robots=tuple(combined_robots),
+        props=tuple(combined_props),
+        camera=scene.camera,
+    )
 
 
 def load_yaml_mapping(path: str | Path) -> dict[str, Any]:
@@ -116,27 +180,44 @@ def load_simulator_config(path: str | Path) -> SimulatorConfig:
     )
 
 
+def _available_yaml_paths(config_path: str | Path, directory_name: str) -> tuple[Path, ...]:
+    directory = Path(config_path).expanduser().resolve().parent / directory_name
+    return tuple(sorted(directory.glob("*.yaml")))
+
+
 def available_scene_paths(config_path: str | Path) -> tuple[Path, ...]:
     """Return scene YAMLs next to a simulator config file."""
-    directory = Path(config_path).expanduser().resolve().parent / "scenes"
-    return tuple(sorted(directory.glob("*.yaml")))
+    return _available_yaml_paths(config_path, "scenes")
 
 
 def available_scene_names(config_path: str | Path) -> tuple[str, ...]:
     return tuple(path.name for path in available_scene_paths(config_path))
 
 
-def resolve_scene_path(config_path: str | Path, selection: str | Path | None) -> Path:
-    """Resolve a scene filename, relative path, or absolute path.
+def available_environment_paths(config_path: str | Path) -> tuple[Path, ...]:
+    """Return environment YAMLs next to a simulator config file."""
+    return _available_yaml_paths(config_path, "environments")
 
-    Bare filenames are searched below the config file's ``scenes`` directory.
-    """
+
+def available_environment_names(config_path: str | Path) -> tuple[str, ...]:
+    return tuple(path.name for path in available_environment_paths(config_path))
+
+
+def _resolve_config_path(
+    config_path: str | Path,
+    selection: str | Path | None,
+    *,
+    directory_name: str,
+    description: str,
+    available_names: tuple[str, ...],
+) -> Path:
+    """Resolve a config filename, relative path, or absolute path."""
     config = Path(config_path).expanduser().resolve()
     if selection in (None, ""):
-        names = "\n  ".join(available_scene_names(config)) or "(none)"
+        names = "\n  ".join(available_names) or "(none)"
         raise ValueError(
-            f"No scene selected. Choose --scene or set scene in {config}.\n"
-            f"Available scenes:\n  {names}"
+            f"No {description} selected. Choose --{description} or set scene in {config}.\n"
+            f"Available {description}s:\n  {names}"
         )
     selected = Path(str(selection)).expanduser()
     if selected.is_absolute():
@@ -144,15 +225,50 @@ def resolve_scene_path(config_path: str | Path, selection: str | Path | None) ->
     else:
         resolved = (config.parent / selected).resolve()
         if not resolved.is_file() and selected.parent == Path("."):
-            resolved = (config.parent / "scenes" / selected).resolve()
+            resolved = (config.parent / directory_name / selected).resolve()
         if not resolved.suffix:
             resolved = resolved.with_suffix(".yaml")
     if not resolved.is_file():
-        names = "\n  ".join(available_scene_names(config)) or "(none)"
+        names = "\n  ".join(available_names) or "(none)"
         raise FileNotFoundError(
-            f"Scene configuration not found: {resolved}\nAvailable scenes:\n  {names}"
+            f"{description.capitalize()} configuration not found: {resolved}\n"
+            f"Available {description}s:\n  {names}"
         )
     return resolved
+
+
+def resolve_scene_path(config_path: str | Path, selection: str | Path | None) -> Path:
+    """Resolve a scene filename, relative path, or absolute path.
+
+    Bare filenames are searched below the config file's ``scenes`` directory.
+    """
+    return _resolve_config_path(
+        config_path,
+        selection,
+        directory_name="scenes",
+        description="scene",
+        available_names=available_scene_names(config_path),
+    )
+
+
+def resolve_environment_path(config_path: str | Path, selection: str | Path | None) -> Path:
+    """Resolve an environment filename, relative path, or absolute path.
+
+    Bare filenames are searched below the config file's ``environments`` directory.
+    """
+    return _resolve_config_path(
+        config_path,
+        selection,
+        directory_name="environments",
+        description="environment",
+        available_names=available_environment_names(config_path),
+    )
+
+
+def _float_tuple(source: Path, value: Any, size: int, field_name: str) -> tuple[float, ...]:
+    if not isinstance(value, (list, tuple)) or len(value) != size:
+        raise ValueError(f"{source}: {field_name} must contain {size} values")
+    return tuple(float(item) for item in value)
 
 
 def _robot_config_path(scene_path: Path, configured: Any) -> Path:
@@ -251,8 +367,59 @@ def load_scene(scene_path: str | Path) -> SceneConfig:
             instrument=str(options["instrument"]) if "instrument" in options else None,
             endoscope=str(options["endoscope"]) if "endoscope" in options else None,
         ))
-    if not entries:
-        raise ValueError(f"{source}: scene has no robots")
+
+    props = []
+    for configured in scene.get("props", []) or []:
+        if not isinstance(configured, dict):
+            raise ValueError(f"{source}: each scene prop must be a mapping")
+        name = str(configured.get("name", ""))
+        kind = str(configured.get("kind", "")).lower()
+        if not name:
+            raise ValueError(f"{source}: scene prop is missing name")
+        if name in names:
+            raise ValueError(f"{source}: duplicate scene entry name {name}")
+        if kind not in {"cube", "table"}:
+            raise ValueError(f"{source}: unsupported prop kind {kind!r} for {name}")
+        position = _float_tuple(source, configured.get("position", [0.0, 0.0, 0.0]), 3,
+                                f"scene.props[{name}].position")
+        orientation_xyzw = _float_tuple(
+            source, configured.get("orientation_xyzw", [0.0, 0.0, 0.0, 1.0]), 4,
+            f"scene.props[{name}].orientation_xyzw"
+        )
+        if not any(abs(component) > 0.0 for component in orientation_xyzw):
+            raise ValueError(f"{source}: scene.props[{name}].orientation_xyzw cannot be zero")
+        size_value = configured.get("size", [1.0, 1.0, 1.0])
+        size = _float_tuple(source, size_value, 3, f"scene.props[{name}].size")
+        if any(component <= 0.0 for component in size):
+            raise ValueError(f"{source}: scene.props[{name}].size values must be positive")
+        color_value = configured.get("color")
+        color = None
+        if color_value is not None:
+            color = _float_tuple(source, color_value, 4, f"scene.props[{name}].color")
+        static = bool(configured.get("static", False))
+        dynamic = bool(configured.get("dynamic", False))
+        if static and dynamic:
+            raise ValueError(f"{source}: scene.props[{name}] cannot be both static and dynamic")
+        mass = None
+        if "mass" in configured:
+            mass = float(configured["mass"])
+            if mass <= 0.0:
+                raise ValueError(f"{source}: scene.props[{name}].mass must be positive")
+        names.add(name)
+        props.append(SceneProp(
+            name=name,
+            kind=kind,
+            position=position,
+            orientation_xyzw=orientation_xyzw,
+            size=size,
+            static=static,
+            dynamic=dynamic,
+            mass=mass,
+            color=color,
+        ))
+
+    if not entries and not props:
+        raise ValueError(f"{source}: scene has no robots or props")
 
     return SceneConfig(
         path=source,
@@ -260,5 +427,6 @@ def load_scene(scene_path: str | Path) -> SceneConfig:
         base_frame_provider=str(scene.get("base_frame_provider", "yaml")),
         frames={str(name): dict(frame) for name, frame in frames.items()},
         robots=tuple(entries),
+        props=tuple(props),
         camera=camera,
     )

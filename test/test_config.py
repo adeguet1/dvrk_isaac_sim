@@ -4,8 +4,14 @@ import numpy as np
 
 from dvrk_isaac_sim.config import load_robot_config
 from dvrk_isaac_sim.scene import (
-    available_scene_names, available_scene_paths, load_scene,
-    load_simulator_config, resolve_scene_path,
+    available_environment_names,
+    available_scene_names,
+    available_scene_paths,
+    load_scene,
+    load_simulator_config,
+    merge_scene_environment,
+    resolve_environment_path,
+    resolve_scene_path,
 )
 
 
@@ -56,6 +62,31 @@ def test_simulator_config_is_typed_and_scene_free_by_default():
     assert config.headless is False
     assert config.scene is None
     assert config.generated_dir.is_absolute()
+
+
+def test_environment_resolution_and_prop_only_environment_loads():
+    config_path = ROOT / "share" / "isaac_sim.yaml.example"
+    assert "test_cube.yaml" in available_environment_names(config_path)
+    environment_path = resolve_environment_path(config_path, "test_cube")
+    environment = load_scene(environment_path)
+    assert environment.name == "test_cube"
+    assert environment.robots == ()
+    assert [(prop.name, prop.kind) for prop in environment.props] == [
+        ("test_table", "table"),
+        ("test_cube", "cube"),
+    ]
+    assert resolve_environment_path(config_path, environment_path) == environment_path
+
+
+def test_environment_can_overlay_a_scene():
+    config_path = ROOT / "share" / "isaac_sim.yaml.example"
+    scene = load_scene(resolve_scene_path(config_path, "ECM_PSM1_PSM2_PSM3_mono.yaml"))
+    environment = load_scene(resolve_environment_path(config_path, "test_cube"))
+    combined = merge_scene_environment(scene, environment)
+    assert combined.name == "ECM_PSM1_PSM2_PSM3_mono+test_cube"
+    assert [robot.name for robot in combined.robots] == ["PSM1", "PSM2", "PSM3", "ECM"]
+    assert [prop.name for prop in combined.props] == ["test_table", "test_cube"]
+    assert combined.camera.mode == "mono"
 
 
 def test_shipped_scenes_enable_all_camera_outputs_with_close_near_clip():

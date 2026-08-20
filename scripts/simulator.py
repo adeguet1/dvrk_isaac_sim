@@ -25,7 +25,15 @@ import numpy as np
 _package_root = Path(__file__).resolve().parents[1]
 if str(_package_root) not in sys.path:
     sys.path.insert(0, str(_package_root))
-from dvrk_isaac_sim.scene import load_scene, load_simulator_config, resolve_scene_path, SceneRobot
+from dvrk_isaac_sim.scene import (
+    SceneRobot,
+    load_scene,
+    load_simulator_config,
+    merge_scene_environment,
+    resolve_environment_path,
+    resolve_scene_path,
+)
+from dvrk_isaac_sim.rotations import quaternion_matrix_xyzw
 
 
 def _arguments() -> argparse.Namespace:
@@ -39,6 +47,8 @@ def _arguments() -> argparse.Namespace:
                         help="override config simulation duration in seconds")
     parser.add_argument("--scene", type=Path, default=None,
                         help="override config and select a scene YAML")
+    parser.add_argument("--env", type=Path, default=None,
+                        help="optionally overlay an environment YAML onto the selected scene")
     parser.add_argument("--run-crtk-integration-test", action="store_true",
                         help="run the test-only CRTK integration test")
     args = parser.parse_args()
@@ -47,10 +57,20 @@ def _arguments() -> argparse.Namespace:
     simulator_config = load_simulator_config(config_path)
     args.config = config_path
     args.simulator_config = simulator_config
-    args.scene_config = resolve_scene_path(
-        config_path, args.scene if args.scene is not None else simulator_config.scene
-    )
-    args.scene_model = load_scene(args.scene_config)
+    scene_selection = args.scene if args.scene is not None else simulator_config.scene
+    args.scene_config = resolve_scene_path(config_path, scene_selection) if scene_selection else None
+    args.environment_config = (resolve_environment_path(config_path, args.env)
+                               if args.env is not None else None)
+    if args.scene_config is None and args.environment_config is None:
+        args.scene_config = resolve_scene_path(config_path, simulator_config.scene)
+    if args.scene_config is not None:
+        args.scene_model = load_scene(args.scene_config)
+        if args.environment_config is not None:
+            args.scene_model = merge_scene_environment(
+                args.scene_model, load_scene(args.environment_config)
+            )
+    else:
+        args.scene_model = load_scene(args.environment_config)
     args.generated_dir = simulator_config.generated_dir
     args.renderer = simulator_config.renderer
     args.headless = simulator_config.headless if args.headless is None else args.headless
@@ -147,6 +167,59 @@ def _generated_variant(args: argparse.Namespace, entry: SceneRobot) -> tuple[Pat
     return asset_dir / entry.name / f"{entry.name}.usda", asset_dir / "kinematics.json"
 
 
+def _quaternion_xyzw_to_euler_xyz_degrees(orientation_xyzw) -> tuple[float, float, float]:
+    x, y, z, w = np.asarray(orientation_xyzw, dtype=float)
+    roll = np.arctan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
+    pitch = np.arcsin(np.clip(2.0 * (w * y - z * x), -1.0, 1.0))
+    yaw = np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    return tuple(float(value) for value in np.degrees([roll, pitch, yaw]))
+
+
+def _spawn_scene_props(props) -> None:
+    if not props:
+        return
+    import omni.usd
+    from pxr import Gf, PhysxSchema, Sdf, UsdGeom, UsdPhysics
+
+    stage = omni.usd.get_context().get_stage()
+    root = stage.DefinePrim("/World/Environment", "Xform")
+    for prop in props:
+        prim_path = Sdf.Path(f"/World/Environment/{prop.name}")
+        geometry = UsdGeom.Cube.Define(stage, prim_path)
+        geometry.CreateSizeAttr(1.0)
+        geometry.CreateDisplayColorAttr([
+            Gf.Vec3f(*(prop.color[:3] if prop.color is not None else (0.7, 0.7, 0.7)))
+        ])
+        if prop.color is not None:
+            geometry.GetPrim().CreateAttribute(
+                "primvars:displayOpacity", Sdf.ValueTypeNames.FloatArray
+            ).Set([float(prop.color[3])])
+
+        xform = UsdGeom.Xformable(geometry.GetPrim())
+        xform.AddTranslateOp(opSuffix="pose").Set(Gf.Vec3d(*prop.position))
+        xform.AddRotateXYZOp(opSuffix="pose").Set(
+            Gf.Vec3d(*_quaternion_xyzw_to_euler_xyz_degrees(prop.orientation_xyzw))
+        )
+        xform.AddScaleOp(opSuffix="shape").Set(Gf.Vec3f(*prop.size))
+
+        prim = geometry.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(prim)
+        if prop.dynamic:
+            UsdPhysics.RigidBodyAPI.Apply(prim)
+            mass_api = UsdPhysics.MassAPI.Apply(prim)
+            if prop.mass is not None:
+                mass_api.CreateMassAttr(float(prop.mass))
+            PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+        print(
+            f"Spawned environment prop {prop.name}: kind={prop.kind}, "
+            f"position={prop.position}, size={prop.size}",
+            flush=True,
+        )
+
+    # Keep the Xform in the scene graph even for empty-only styling cases.
+    UsdGeom.Xformable(root)
+
+
 def main() -> int:
     args = _arguments()
 
@@ -155,6 +228,7 @@ def main() -> int:
 
     simulation_app = SimulationApp({"headless": args.headless, "renderer": args.renderer})
     nodes = []
+    clock_node = None
     executor = None
     ui_window = None
     try:
@@ -178,6 +252,7 @@ def main() -> int:
         # only; never add the endoscope/ECM mesh to the stage.
 
         _setup_scene_lighting()
+        _spawn_scene_props(args.scene_model.props)
 
         import rclpy
         from rclpy.node import Node
@@ -200,6 +275,8 @@ def main() -> int:
         rclpy.init()
         from rclpy.executors import SingleThreadedExecutor
         executor = SingleThreadedExecutor()
+        clock_node = Node("dvrk_isaac_sim_world")
+        executor.add_node(clock_node)
 
         cameras = []
 
@@ -271,7 +348,7 @@ def main() -> int:
             component.publish_tool_type()
         simulation_time = max(0.0, float(timeline.get_current_time()))
         fixed_dt = 1.0 / args.simulation_rate_hz
-        clock_publisher = nodes[0][0].create_publisher(Clock, "/clock", 10)
+        clock_publisher = clock_node.create_publisher(Clock, "/clock", 10)
         if args.run_crtk_integration_test:
             print("Isaac Sim CRTK integration test running", flush=True)
             for entry in scene_entries:
@@ -336,6 +413,8 @@ def main() -> int:
         if executor is not None:
             executor.shutdown()
         if "rclpy" in locals() and rclpy.ok():
+            if clock_node is not None:
+                clock_node.destroy_node()
             for node, _, _, _ in nodes:
                 node.destroy_node()
             rclpy.shutdown()

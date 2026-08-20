@@ -12,7 +12,12 @@ _package_root = Path(__file__).resolve().parents[1]
 if str(_package_root) not in sys.path:
     sys.path.insert(0, str(_package_root))
 
-from dvrk_isaac_sim.scene import available_scene_paths, load_scene, load_simulator_config
+from dvrk_isaac_sim.scene import (
+    available_environment_paths,
+    available_scene_paths,
+    load_scene,
+    load_simulator_config,
+)
 
 
 def main() -> int:
@@ -23,10 +28,23 @@ def main() -> int:
     config_path = args.config.expanduser().resolve()
     simulator = load_simulator_config(config_path)
     scenes = available_scene_paths(config_path)
+    environments = available_environment_paths(config_path)
     for scene_path in scenes:
         scene = load_scene(scene_path)
-        print(f"OK {scene_path.name}: {len(scene.robots)} robots, camera={scene.camera.mode}")
-    print(f"OK {config_path.name}: renderer={simulator.renderer}, scenes={len(scenes)}")
+        print(
+            f"OK {scene_path.name}: {len(scene.robots)} robots, "
+            f"{len(scene.props)} props, camera={scene.camera.mode}"
+        )
+    for environment_path in environments:
+        environment = load_scene(environment_path)
+        print(
+            f"OK {environment_path.name}: {len(environment.robots)} robots, "
+            f"{len(environment.props)} props, camera={environment.camera.mode}"
+        )
+    print(
+        f"OK {config_path.name}: renderer={simulator.renderer}, "
+        f"scenes={len(scenes)}, environments={len(environments)}"
+    )
     return 0
 
 

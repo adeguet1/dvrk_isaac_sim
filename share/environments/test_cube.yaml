@@ -1,0 +1,24 @@
+scene:
+  name: test_cube
+  base_frame_provider: yaml
+  camera:
+    mode: "off"
+    owner: ECM
+
+  props:
+    - name: test_table
+      kind: table
+      position: [0.0, 0.0, -0.1]
+      orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+      size: [0.8, 0.8, 0.08]
+      static: true
+      color: [1.0, 1.0, 1.0, 1.0]
+
+    - name: test_cube
+      kind: cube
+      position: [0.0, 0.0, 0.57]
+      orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+      size: [0.1, 0.1, 0.1]
+      dynamic: true
+      mass: 0.2
+      color: [1.0, 0.2, 0.2, 1.0]

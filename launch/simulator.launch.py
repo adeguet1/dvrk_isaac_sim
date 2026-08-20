@@ -8,7 +8,13 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, LogInfo, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
-from dvrk_isaac_sim.scene import load_scene, load_simulator_config, resolve_scene_path
+from dvrk_isaac_sim.scene import (
+    load_scene,
+    merge_scene_environment,
+    load_simulator_config,
+    resolve_environment_path,
+    resolve_scene_path,
+)
 
 
 
@@ -30,9 +36,21 @@ def _start_sim(context):
     if not isaac_python.is_file():
         raise RuntimeError(f"Isaac Sim python.sh not found: {isaac_python}")
 
-    scene_selection = LaunchConfiguration("scene").perform(context) or simulator_config.scene
-    scene_config = resolve_scene_path(config_path, scene_selection)
-    scene = load_scene(scene_config)
+    scene_selection = LaunchConfiguration("scene").perform(context)
+    environment_selection = LaunchConfiguration("env").perform(context)
+    base_scene_selection = scene_selection or simulator_config.scene
+    scene_config = (resolve_scene_path(config_path, base_scene_selection)
+                    if base_scene_selection else None)
+    environment_config = (resolve_environment_path(config_path, environment_selection)
+                          if environment_selection else None)
+    if scene_config is None and environment_config is None:
+        scene_config = resolve_scene_path(config_path, simulator_config.scene)
+    if scene_config is not None:
+        scene = load_scene(scene_config)
+        if environment_config is not None:
+            scene = merge_scene_environment(scene, load_scene(environment_config))
+    else:
+        scene = load_scene(environment_config)
     generated_dir = simulator_config.generated_dir
 
     conversion_commands = []
@@ -64,7 +82,11 @@ def _start_sim(context):
         ensure_asset(robot)
 
     command = [str(isaac_python), str(package_share / "scripts" / "simulator.py"),
-               "--config", str(config_path), "--scene", str(scene_config)]
+               "--config", str(config_path)]
+    if scene_config is not None:
+        command.extend(["--scene", str(scene_config)])
+    if environment_config is not None:
+        command.extend(["--env", str(environment_config)])
     if LaunchConfiguration("headless").perform(context).lower() in {"true", "1", "yes"}:
         command.append("--headless")
     duration = LaunchConfiguration("duration").perform(context)
@@ -106,6 +128,8 @@ def generate_launch_description():
                               description="Optional Isaac Sim path override"),
         DeclareLaunchArgument("scene", default_value="",
                               description="Scene YAML path or filename under share/scenes"),
+        DeclareLaunchArgument("env", default_value="",
+                      description="Environment YAML path or filename under share/environments"),
         DeclareLaunchArgument("headless", default_value="",
                               description="Optional headless override; otherwise use config"),
         DeclareLaunchArgument("duration", default_value="",

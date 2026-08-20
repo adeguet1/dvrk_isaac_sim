@@ -221,6 +221,7 @@ The launch command has only a few user-facing options:
 
 - `config:=...` selects a saved config file;
 - `scene:=...` selects a scene filename under `share/scenes` or an explicit YAML path;
+- `env:=...` selects an environment filename under `share/environments` or an explicit YAML path and can be used by itself or together with `scene:=...`;
 - `headless:=true` and `duration:=...` are one-shot runtime overrides;
 - `isaac_sim_dir:=...` temporarily overrides the saved Isaac Sim path.
 
@@ -233,6 +234,11 @@ From the sourced ROS 2 environment:
 source /opt/ros/jazzy/setup.bash
 source /path/to/isaac_sim_ws/install/setup.bash
 ros2 launch dvrk_isaac_sim simulator.launch.py scene:=PSM1_420006_mono.yaml
+
+ros2 launch dvrk_isaac_sim simulator.launch.py env:=test_cube
+
+ros2 launch dvrk_isaac_sim simulator.launch.py \
+  scene:=ECM_PSM1_PSM2_PSM3_mono.yaml env:=test_cube
 ```
 
 To save settings, copy the example config and edit it:
