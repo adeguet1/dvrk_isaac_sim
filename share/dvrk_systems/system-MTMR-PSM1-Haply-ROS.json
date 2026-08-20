@@ -42,6 +42,15 @@
             "type": "PSM_GENERIC",
             "component": "PSM1",
             "interface": "PSM1",
+            "base_frame": {
+                "reference_frame": "ECM_view",
+                "transform": [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0]
+                ]
+            },
             "skip_ROS_bridge": true
         }
     ],
