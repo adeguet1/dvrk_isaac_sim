@@ -12,7 +12,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+from _isaac_sim_build import require_isaac_sim_build
 from dvrk_isaac_sim.urdf_kinematics import write_kinematics_manifest
+
+require_isaac_sim_build(__file__)
 
 def _default_output() -> Path:
     for parent in Path(__file__).resolve().parents:

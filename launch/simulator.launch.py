@@ -22,8 +22,8 @@ def _start_sim(context):
                  else simulator_config.isaac_sim_dir)
     if isaac_dir is None:
         raise RuntimeError(
-            "Isaac Sim path is not configured. Set isaac_sim_dir:=... "
-            "or isaac_sim_dir in the config file."
+            "Isaac Sim path is not configured. Build the workspace with "
+            "ISAAC_SIM_DIR set to the Isaac Sim root directory."
         )
     isaac_dir = isaac_dir.resolve()
     isaac_python = isaac_dir / "python.sh"

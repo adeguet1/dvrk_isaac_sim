@@ -12,7 +12,10 @@ _package_root = Path(__file__).resolve().parents[1]
 if str(_package_root) not in sys.path:
     sys.path.insert(0, str(_package_root))
 
+from _isaac_sim_build import require_isaac_sim_build
 from dvrk_isaac_sim.scene import available_scene_paths, load_scene, load_simulator_config
+
+require_isaac_sim_build(__file__)
 
 
 def main() -> int:

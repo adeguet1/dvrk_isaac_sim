@@ -25,6 +25,9 @@ import numpy as np
 _package_root = Path(__file__).resolve().parents[1]
 if str(_package_root) not in sys.path:
     sys.path.insert(0, str(_package_root))
+from _isaac_sim_build import require_isaac_sim_build
+
+require_isaac_sim_build(__file__)
 from dvrk_isaac_sim.scene import load_scene, load_simulator_config, resolve_scene_path, SceneRobot
 
 

@@ -49,7 +49,7 @@ cd /path/to/isaac_sim_ws
 colcon build --symlink-install
 ```
 
-The Python package setup validates the Isaac Sim installation during `colcon build`. On the first build, set `ISAAC_SIM_DIR`; it accepts either a direct installation directory or a source/build root containing `_build/linux-x86_64/release/python.sh`:
+The Python package setup validates and saves the Isaac Sim installation during `colcon build`. If `ISAAC_SIM_DIR` has not yet been set, the package still builds with a warning, but its installed scripts report that the workspace must be rebuilt with `ISAAC_SIM_DIR`. Set it to either a direct installation directory or a source/build root containing `_build/linux-x86_64/release/python.sh`, then rebuild:
 
 ```bash
 export ISAAC_SIM_DIR=/path/to/isaac-sim

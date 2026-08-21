@@ -16,10 +16,13 @@ if not (PACKAGE_ROOT / "test").is_dir():
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
+from _isaac_sim_build import require_isaac_sim_build
 from dvrk_isaac_sim.scene import (
     available_scene_names,
     load_simulator_config,
 )
+
+require_isaac_sim_build(__file__)
 
 
 def _run(command: list[str], label: str) -> str:

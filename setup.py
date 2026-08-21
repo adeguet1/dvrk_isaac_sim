@@ -10,6 +10,14 @@ from setuptools import find_packages, setup
 package_name = "dvrk_isaac_sim"
 local_isaac_config = Path("share/isaac_sim.yaml")
 example_isaac_config = Path("share/isaac_sim.yaml.example")
+script_files = [
+    "scripts/simulator.py",
+    "scripts/tests",
+    "scripts/convert_dvrk_model.py",
+    "scripts/generate_cart_frames.py",
+    "scripts/validate_config.py",
+    "scripts/_isaac_sim_build.py",
+]
 
 
 def _isaac_sim_dir_from_input(value: str) -> Path:
@@ -65,7 +73,8 @@ def _check_installed_configs(saved: Path) -> None:
                 )
 
 
-def _configure_isaac_sim() -> None:
+def _configure_isaac_sim() -> bool:
+    """Configure Isaac Sim and return whether its scripts may be installed."""
     environment_value = os.environ.get("ISAAC_SIM_DIR", "").strip()
     try:
         environment_dir = (_isaac_sim_dir_from_input(environment_value)
@@ -86,27 +95,43 @@ def _configure_isaac_sim() -> None:
             f'isaac_sim_dir: "{environment_dir}"\n', encoding="utf-8")
         saved_dir = environment_dir
     elif saved_dir is None:
-        print(
-            "error: Isaac Sim is not configured. Set ISAAC_SIM_DIR to the "
-            "Isaac Sim root directory and rerun colcon build. For example:\n\n"
-            "  export ISAAC_SIM_DIR=$HOME/devel/isaac-sim-6.0.1\n"
-            "  colcon build --symlink-install\n\n"
-            "The directory may contain python.sh directly or under "
-            "_build/linux-x86_64/release/.",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
+        if not local_isaac_config.exists():
+            print(
+                "warning: Isaac Sim is not configured. Set ISAAC_SIM_DIR to the Isaac Sim "
+                "root directory and rebuild the workspace. Installed scripts will "
+                "report this configuration error until then. The directory may "
+                "contain python.sh directly or under _build/linux-x86_64/release/.",
+                file=sys.stderr,
+            )
+        local_isaac_config.parent.mkdir(parents=True, exist_ok=True)
+        local_isaac_config.write_text("isaac_sim_dir: null\n", encoding="utf-8")
+        return False
 
     _check_installed_configs(saved_dir)
+    return True
+
+
+def _remove_installed_script_links() -> None:
+    """Allow symlink-install to refresh this package's script data files."""
+    workspace = _workspace_root()
+    if workspace is None:
+        return
+    directory = workspace / "install" / package_name / "share" / package_name / "scripts"
+    for script in script_files:
+        installed = directory / Path(script).name
+        if installed.is_symlink():
+            installed.unlink()
 
 
 # colcon runs setup.py with metadata/help commands before the actual build.
 # Do not require local machine configuration during those inspections; the
 # real build invocation below performs the validation and reports the useful
 # Isaac Sim-specific message.  ``--help develop`` is one such probe.
+isaac_sim_configured = True
 if "--dry-run" not in sys.argv and not any(
         argument.startswith("--help") for argument in sys.argv):
-    _configure_isaac_sim()
+    isaac_sim_configured = _configure_isaac_sim()
+    _remove_installed_script_links()
 config_files = [
     "share/arms/PSM.yaml",
     "share/arms/PSM1.yaml",
@@ -138,13 +163,7 @@ setup(
     data_files=[
         *data_files,
         (f"share/{package_name}/launch", ["launch/simulator.launch.py"]),
-        (f"share/{package_name}/scripts", [
-            "scripts/simulator.py",
-            "scripts/tests",
-            "scripts/convert_dvrk_model.py",
-            "scripts/generate_cart_frames.py",
-            "scripts/validate_config.py",
-        ]),
+        (f"share/{package_name}/scripts", script_files),
     ],
     install_requires=["setuptools", "numpy", "PyYAML"],
     zip_safe=True,
