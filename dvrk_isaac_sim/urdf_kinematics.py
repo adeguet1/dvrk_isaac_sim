@@ -66,6 +66,76 @@ def _joint_dict(element: ET.Element) -> dict:
     }
 
 
+def _geometry_dict(collision: ET.Element) -> dict:
+    geometry = collision.find("geometry")
+    if geometry is None:
+        return {"type": "unknown"}
+
+    mesh = geometry.find("mesh")
+    if mesh is not None:
+        return {
+            "type": "mesh",
+            "filename": mesh.attrib.get("filename", ""),
+            "scale": _numbers(mesh.attrib.get("scale"), 3),
+        }
+
+    box = geometry.find("box")
+    if box is not None:
+        return {
+            "type": "box",
+            "size": _numbers(box.attrib.get("size"), 3),
+        }
+
+    sphere = geometry.find("sphere")
+    if sphere is not None:
+        radius = sphere.attrib.get("radius")
+        return {
+            "type": "sphere",
+            "radius": float(radius) if radius is not None else 0.0,
+        }
+
+    cylinder = geometry.find("cylinder")
+    if cylinder is not None:
+        radius = cylinder.attrib.get("radius")
+        length = cylinder.attrib.get("length")
+        return {
+            "type": "cylinder",
+            "radius": float(radius) if radius is not None else 0.0,
+            "length": float(length) if length is not None else 0.0,
+        }
+
+    return {"type": "unknown"}
+
+
+def _relative_visual_path(link_path: str, visual_root: str) -> str:
+    if link_path == visual_root:
+        return ""
+    if link_path.startswith(visual_root + "/"):
+        return link_path[len(visual_root) + 1:]
+    return link_path
+
+
+def _collision_items(root: ET.Element, link_paths: dict[str, str], visual_root: str) -> list[dict]:
+    result = []
+    for link in root.findall("link"):
+        link_name = link.attrib.get("name", "")
+        if not link_name or link_name not in link_paths:
+            continue
+        relative_prim = _relative_visual_path(link_paths[link_name], visual_root)
+        collisions = list(link.findall("collision"))
+        for index, collision in enumerate(collisions):
+            origin = collision.find("origin")
+            result.append({
+                "name": collision.attrib.get("name", f"{link_name}_collision_{index}"),
+                "source_link": link_name,
+                "prim": relative_prim,
+                "origin_xyz": _numbers(origin.attrib.get("xyz") if origin is not None else None, 3),
+                "origin_rpy": _numbers(origin.attrib.get("rpy") if origin is not None else None, 3),
+                "geometry": _geometry_dict(collision),
+            })
+    return result
+
+
 def write_kinematics_manifest(urdf_path: str | Path, output_path: str | Path, model: str) -> Path:
     """Extract the selected root-to-tool chain from an expanded URDF."""
     root = ET.parse(urdf_path).getroot()
@@ -111,6 +181,7 @@ def write_kinematics_manifest(urdf_path: str | Path, output_path: str | Path, mo
             break
         pending = next_pending
 
+    visual_root = "Geometry/world"
     visual_joints = {}
     for joint in joints:
         if joint["type"] not in ("revolute", "continuous", "prismatic"):
@@ -122,13 +193,7 @@ def write_kinematics_manifest(urdf_path: str | Path, output_path: str | Path, mo
         if np.count_nonzero(np.abs(axis) > 1e-8) != 1:
             continue
         visual_path = link_paths[joint["child"]]
-        visual_root = "Geometry/world"
-        if visual_path == visual_root:
-            relative_visual_path = ""
-        elif visual_path.startswith(visual_root + "/"):
-            relative_visual_path = visual_path[len(visual_root) + 1:]
-        else:
-            relative_visual_path = visual_path
+        relative_visual_path = _relative_visual_path(visual_path, visual_root)
         visual_joints[joint["name"]] = {
             "prim": relative_visual_path,
             "operation": "translate" if joint["type"] == "prismatic" else "rotate",
@@ -146,14 +211,20 @@ def write_kinematics_manifest(urdf_path: str | Path, output_path: str | Path, mo
             ),
         }
 
+    collision_items = _collision_items(root, link_paths, visual_root)
+
     manifest = {
-        "format": 3,
+        "format": 4,
         "model": model,
         "tip_link": tip,
         "root_link": current,
         "joints": chain,
         "active_joints": active,
-        "visual": {"root": "Geometry/world", "joints": visual_joints},
+        "visual": {"root": visual_root, "joints": visual_joints},
+        "collision": {
+            "root": visual_root,
+            "items": collision_items,
+        },
     }
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)

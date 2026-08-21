@@ -270,6 +270,7 @@ def main() -> int:
         from dvrk_isaac_sim.config import load_robot_config
         from dvrk_isaac_sim.kinematics import CRTKECM, CRTKPSM
         from dvrk_isaac_sim.ros_interface import CRTKROSComponent
+        from dvrk_isaac_sim.usd_collision import apply_collision_meshes
         from dvrk_isaac_sim.usd_visual import CRTKUSDVisual
 
         rclpy.init()
@@ -306,6 +307,14 @@ def main() -> int:
                 if stage.GetPrimAtPath(f"/World/{config.name}").IsValid()
                 else None
             )
+            if visual is not None:
+                collision_count = apply_collision_meshes(
+                    config.name, config.kinematics_manifest
+                )
+                print(
+                    f"Applied {collision_count} collision APIs for {config.name}",
+                    flush=True,
+                )
             camera = None
             if config.type == "ECM" and args.camera != "off":
                 from dvrk_isaac_sim.camera import IsaacCameraPublisher
