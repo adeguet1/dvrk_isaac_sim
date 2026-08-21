@@ -150,6 +150,7 @@ setup(
     zip_safe=True,
     entry_points={
         "console_scripts": [
+            "clean_cache = dvrk_isaac_sim.clean_cache:main",
             "dvrk_isaac_sim_kinematics = dvrk_isaac_sim.kinematics:main",
             "dvrk_isaac_sim_ros = dvrk_isaac_sim.ros_node:main",
         ],

@@ -31,7 +31,15 @@ def test_psm_instances_include_shared_defaults():
         config = load_robot_config(ROOT / "share" / "arms" / f"{name}.yaml")
         assert config.name == name
         assert len(config.joints) == 6
-        assert all(joint.velocity == (0.4 if joint.name == "insertion" else 2.0)
+        expected_velocity = {
+            "yaw": 5.0,
+            "pitch": 5.0,
+            "insertion": 0.4,
+            "roll": 50.0,
+            "wrist_pitch": 50.0,
+            "wrist_yaw": 50.0,
+        }
+        assert all(joint.velocity == expected_velocity[joint.name]
                    for joint in config.joints)
 
 
