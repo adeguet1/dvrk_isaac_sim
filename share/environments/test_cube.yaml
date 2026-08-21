@@ -8,7 +8,7 @@ scene:
   props:
     - name: test_table
       kind: table
-      position: [0.0, 0.0, -0.05]
+      position: [0.0, 0.0, -0.025]
       orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
       size: [0.8, 0.8, 0.08]
       static: true
@@ -16,7 +16,7 @@ scene:
 
     - name: test_cube
       kind: cube
-      position: [-0.055, 0.0, 0.545]
+      position: [0.1, 0.0, 0.545]
       orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
       size: [0.015, 0.015, 0.015]
       dynamic: true
