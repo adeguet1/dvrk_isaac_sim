@@ -209,7 +209,8 @@ def _spawn_scene_props(props) -> None:
             mass_api = UsdPhysics.MassAPI.Apply(prim)
             if prop.mass is not None:
                 mass_api.CreateMassAttr(float(prop.mass))
-            PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+            physx_rigid = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+            physx_rigid.CreateEnableCCDAttr().Set(True)
         print(
             f"Spawned environment prop {prop.name}: kind={prop.kind}, "
             f"position={prop.position}, size={prop.size}",
@@ -218,6 +219,24 @@ def _spawn_scene_props(props) -> None:
 
     # Keep the Xform in the scene graph even for empty-only styling cases.
     UsdGeom.Xformable(root)
+
+
+def _ensure_physics_scene(simulation_rate_hz: float) -> None:
+    import omni.usd
+    from pxr import PhysxSchema, UsdPhysics
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        raise RuntimeError("Isaac Sim stage is not available")
+
+    scene_path = "/World/PhysicsScene"
+    if stage.GetPrimAtPath(scene_path).IsValid():
+        return
+
+    physics_scene = UsdPhysics.Scene.Define(stage, scene_path)
+    physx_scene = PhysxSchema.PhysxSceneAPI.Apply(physics_scene.GetPrim())
+    physx_scene.CreateEnableCCDAttr().Set(True)
+    physx_scene.CreateTimeStepsPerSecondAttr().Set(float(simulation_rate_hz))
 
 
 def main() -> int:
@@ -252,6 +271,7 @@ def main() -> int:
         # only; never add the endoscope/ECM mesh to the stage.
 
         _setup_scene_lighting()
+        _ensure_physics_scene(args.simulation_rate_hz)
         _spawn_scene_props(args.scene_model.props)
 
         import rclpy
@@ -270,7 +290,7 @@ def main() -> int:
         from dvrk_isaac_sim.config import load_robot_config
         from dvrk_isaac_sim.kinematics import CRTKECM, CRTKPSM
         from dvrk_isaac_sim.ros_interface import CRTKROSComponent
-        from dvrk_isaac_sim.usd_collision import apply_collision_meshes
+        from dvrk_isaac_sim.usd_physics_links import PhysicsLinkSync
         from dvrk_isaac_sim.usd_visual import CRTKUSDVisual
 
         rclpy.init()
@@ -307,20 +327,16 @@ def main() -> int:
                 if stage.GetPrimAtPath(f"/World/{config.name}").IsValid()
                 else None
             )
-            if visual is not None:
-                collision_count = apply_collision_meshes(
-                    config.name, config.kinematics_manifest
-                )
-                print(
-                    f"Applied {collision_count} collision APIs for {config.name}",
-                    flush=True,
-                )
+            physics_links = None
+            chain = getattr(component.model, "_urdf_chain", None)
+            if visual is not None and chain is not None and config.kinematics_manifest is not None:
+                physics_links = PhysicsLinkSync(config.name, config.kinematics_manifest, chain)
             camera = None
             if config.type == "ECM" and args.camera != "off":
                 from dvrk_isaac_sim.camera import IsaacCameraPublisher
                 camera = IsaacCameraPublisher(node, config, args.camera, args.scene_camera)
                 cameras.append(camera)
-            nodes.append((node, component, visual, camera))
+            nodes.append((node, component, visual, physics_links, camera))
 
         if scene_entries:
             for entry in scene_entries:
@@ -330,19 +346,19 @@ def main() -> int:
         # PSM Cartesian CRTK topics are expressed in the moving ECM optical
         # frame, as on a dVRK system. Wire this after all components exist
         # because scene YAML may list the PSMs before the ECM.
-        ecm_component = next((component for _, component, _, _ in nodes
+        ecm_component = next((component for _, component, _, _, _ in nodes
                               if component.config.type == "ECM"), None)
         if ecm_component is not None:
             # PSM Cartesian topics use dVRK view axes, derived from the
             # current ECM optical FK rather than raw optical-camera axes.
             ecm_view_frame = f"{ecm_component.config.name}_view"
-            for _, component, _, _ in nodes:
+            for _, component, _, _, _ in nodes:
                 if component.config.type == "PSM":
                     component.set_cartesian_reference(ecm_component.model, ecm_view_frame)
 
         if not args.headless:
             from dvrk_isaac_sim.isaac_ui import IsaacCRTKWindow
-            ui_window = IsaacCRTKWindow([component for _, component, _, _ in nodes])
+            ui_window = IsaacCRTKWindow([component for _, component, _, _, _ in nodes])
 
         # Advance ECM first so every PSM reads the current, not previous-step,
         # camera pose when converting Cartesian state and commands.
@@ -353,7 +369,7 @@ def main() -> int:
         timeline = get_timeline_interface()
         _configure_fixed_timestep(timeline, args.simulation_rate_hz)
         timeline.play()
-        for _, component, _, _ in nodes:
+        for _, component, _, _, _ in nodes:
             component.publish_tool_type()
         simulation_time = max(0.0, float(timeline.get_current_time()))
         fixed_dt = 1.0 / args.simulation_rate_hz
@@ -376,18 +392,24 @@ def main() -> int:
                 clock.clock = stamp
                 clock_publisher.publish(clock)
 
-            for _, component, _, _ in ordered_nodes:
+            for _, component, _, _, _ in ordered_nodes:
                 component.set_simulation_stamp(stamp)
 
             _spin_some(executor)
 
-            for node, component, visual, camera in ordered_nodes:
+            for node, component, visual, physics_links, camera in ordered_nodes:
                 component.process_pending_commands()
                 component.model.step(fixed_dt if playing else 0.0)
                 measured = component.model.measured_js()
                 if visual is not None:
                     visual.update(
                         measured.names, measured.position,
+                        component.jaw_position,
+                    )
+                if physics_links is not None:
+                    physics_links.update(
+                        measured.names,
+                        measured.position,
                         component.jaw_position,
                     )
                 component.publish(stamp, valid=playing)
@@ -399,7 +421,7 @@ def main() -> int:
             # Render after kinematic state and camera poses are current, then
             # publish the rendered frame.
             simulation_app.update()
-            for _, _, _, camera in ordered_nodes:
+            for _, _, _, _, camera in ordered_nodes:
                 if camera is not None and playing:
                     camera.publish(current_time)
             if ui_window is not None:
@@ -424,7 +446,7 @@ def main() -> int:
         if "rclpy" in locals() and rclpy.ok():
             if clock_node is not None:
                 clock_node.destroy_node()
-            for node, _, _, _ in nodes:
+            for node, _, _, _, _ in nodes:
                 node.destroy_node()
             rclpy.shutdown()
         simulation_app.close()

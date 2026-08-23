@@ -16,9 +16,9 @@ scene:
 
     - name: test_cube
       kind: cube
-      position: [0.1, 0.0, 0.545]
+      position: [0.0, 0.0, 0.03]
       orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
-      size: [0.015, 0.015, 0.015]
+      size: [0.03, 0.03, 0.03]
       dynamic: true
       mass: 0.03
       color: [1.0, 0.2, 0.2, 1.0]

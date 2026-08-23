@@ -240,6 +240,7 @@ class UrdfKinematicChain:
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         self.joints = tuple(manifest["joints"])
         self.active_joints = tuple(manifest["active_joints"])
+        self.tip_link = str(manifest.get("tip_link", ""))
 
     def forward(self, q: np.ndarray, joint_names: tuple[str, ...]) -> tuple[np.ndarray, np.ndarray]:
         if q.shape != (len(joint_names),):
@@ -275,3 +276,29 @@ class UrdfKinematicChain:
             else:
                 jacobian[:3, index] = axis
         return transform, jacobian
+
+    def forward_all_links(self, q: np.ndarray, joint_names: tuple[str, ...]) -> dict[str, np.ndarray]:
+        """Return the world transform for each joint child link in the chain."""
+        if q.shape != (len(joint_names),):
+            raise ValueError("joint position has the wrong size")
+        values = dict(zip(joint_names, q))
+        transform = np.eye(4)
+        poses: dict[str, np.ndarray] = {}
+        for joint in self.joints:
+            transform = transform @ _transform(_rpy_matrix(*joint["origin_rpy"]), joint["origin_xyz"])
+            joint_type = joint["type"]
+            if joint_type in ("revolute", "continuous", "prismatic"):
+                axis = np.asarray(joint["axis"], dtype=float)
+                if np.linalg.norm(axis) == 0.0:
+                    axis = np.array([0.0, 0.0, 1.0])
+                mimic = joint["mimic"]
+                if mimic is not None:
+                    angle = values.get(mimic["joint"], 0.0) * mimic["multiplier"] + mimic["offset"]
+                else:
+                    angle = values.get(joint["name"], 0.0)
+                if joint_type in ("revolute", "continuous"):
+                    transform = transform @ _transform(_rotation(axis, angle), [0.0, 0.0, 0.0])
+                else:
+                    transform = transform @ _transform(np.eye(3), (axis * angle).tolist())
+            poses[joint["child"]] = transform.copy()
+        return poses
