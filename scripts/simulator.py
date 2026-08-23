@@ -80,6 +80,7 @@ def _arguments() -> argparse.Namespace:
     args.camera = args.scene_model.camera.mode
     if args.renderer not in {"RaytracedLighting", "RealTimePathTracing", "PathTracing"}:
         raise ValueError(f"{config_path}: unsupported renderer {args.renderer}")
+    args.table_contact_clearance_m = 0.001
     return args
 
 
@@ -239,6 +240,22 @@ def _ensure_physics_scene(simulation_rate_hz: float) -> None:
     physx_scene.CreateTimeStepsPerSecondAttr().Set(float(simulation_rate_hz))
 
 
+def _table_surface_z_world(props) -> float | None:
+    """Return highest axis-aligned table top z from scene props."""
+    tops = []
+    for prop in props:
+        if getattr(prop, "kind", "") != "table":
+            continue
+        x, y, z, w = [float(value) for value in prop.orientation_xyzw]
+        if abs(x) > 1e-6 or abs(y) > 1e-6 or abs(z) > 1e-6 or abs(w - 1.0) > 1e-6:
+            # The guard assumes a horizontal table plane in world coordinates.
+            continue
+        tops.append(float(prop.position[2]) + 0.5 * float(prop.size[2]))
+    if not tops:
+        return None
+    return max(tops)
+
+
 def main() -> int:
     args = _arguments()
 
@@ -273,6 +290,13 @@ def main() -> int:
         _setup_scene_lighting()
         _ensure_physics_scene(args.simulation_rate_hz)
         _spawn_scene_props(args.scene_model.props)
+        table_surface_z = _table_surface_z_world(args.scene_model.props)
+        if table_surface_z is not None:
+            print(
+                f"Table contact guard enabled at world z={table_surface_z:.4f} m "
+                f"with clearance {args.table_contact_clearance_m:.4f} m",
+                flush=True,
+            )
 
         import rclpy
         from rclpy.node import Node
@@ -319,6 +343,11 @@ def main() -> int:
             component = CRTKROSComponent(
                 node, config, model, _ros_time(1.0 / args.simulation_rate_hz)
             )
+            if config.type == "PSM" and table_surface_z is not None:
+                component.set_world_z_floor(
+                    table_surface_z,
+                    margin=args.table_contact_clearance_m,
+                )
             import omni.usd
 
             stage = omni.usd.get_context().get_stage()

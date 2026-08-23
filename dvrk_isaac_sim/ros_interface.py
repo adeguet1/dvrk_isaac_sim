@@ -74,6 +74,9 @@ class CRTKROSComponent:
             config.base_position.copy(),
             _quaternion_matrix_xyzw(config.base_orientation_xyzw),
         )
+        self._world_z_floor: float | None = None
+        self._world_z_floor_margin = 0.0
+        self._last_table_clamp_warning_time = 0.0
         state_qos = transient_local_event_qos()
 
         self.measured_js_publisher = node.create_publisher(JointState, "measured_js", 10)
@@ -197,6 +200,33 @@ class CRTKROSComponent:
         self._cartesian_reference = reference
         self._cartesian_reference_frame = str(frame_id)
         self._frame_id = self._cartesian_reference_frame
+
+    def set_world_z_floor(self, z_floor: float, margin: float = 0.0) -> None:
+        """Reject Cartesian commands that drive the tool below a world-Z floor."""
+        self._world_z_floor = float(z_floor)
+        self._world_z_floor_margin = max(0.0, float(margin))
+
+    def _constrain_cartesian_target(self, command: str, target_world: Pose) -> Pose:
+        if self._world_z_floor is None:
+            return target_world
+        z_limit = self._world_z_floor + self._world_z_floor_margin
+        z_target = float(target_world.position[2])
+        if z_target >= z_limit:
+            return target_world
+
+        clamped_position = target_world.position.copy()
+        clamped_position[2] = z_limit
+        now = time.monotonic()
+        if now - self._last_table_clamp_warning_time >= 1.0:
+            self._last_table_clamp_warning_time = now
+            self._publish_warning(
+                f"clamped {command}: target z={z_target:.4f} m to table limit z={z_limit:.4f} m"
+            )
+            self.node.get_logger().warning(
+                f"{self.config.name} clamped {command}: target z={z_target:.4f} m "
+                f"to table limit z={z_limit:.4f} m"
+            )
+        return Pose(clamped_position, target_world.orientation.copy())
 
     def _view_to_base(self) -> Pose:
         """Return the current transform from ECM view coordinates to PSM base."""
@@ -384,9 +414,9 @@ class CRTKROSComponent:
         if not self._motion_allowed("move_cp"):
             return
         try:
-            result = self.model.move_cp(
-                self._pose_from_ros(_pose_from_ros(message), message.header.frame_id)
-            )
+            target_world = self._pose_from_ros(_pose_from_ros(message), message.header.frame_id)
+            constrained_target = self._constrain_cartesian_target("move_cp", target_world)
+            result = self.model.move_cp(constrained_target)
             if not result.success:
                 self._ik_failure("move_cp", result.message)
                 self._publish_motion_failure()
@@ -410,9 +440,9 @@ class CRTKROSComponent:
         if not self._motion_allowed("servo_cp"):
             return
         try:
-            result = self.model.move_cp(
-                self._pose_from_ros(_pose_from_ros(message), message.header.frame_id)
-            )
+            target_world = self._pose_from_ros(_pose_from_ros(message), message.header.frame_id)
+            constrained_target = self._constrain_cartesian_target("servo_cp", target_world)
+            result = self.model.move_cp(constrained_target)
             if not result.success:
                 self._ik_failure("servo_cp", result.message)
             else:
