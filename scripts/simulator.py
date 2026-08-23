@@ -368,7 +368,8 @@ def _spawn_scene_props(props) -> None:
             mass_api = UsdPhysics.MassAPI.Apply(prim)
             if prop.mass is not None:
                 mass_api.CreateMassAttr(float(prop.mass))
-            PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+            physx_rigid = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+            physx_rigid.CreateEnableCCDAttr().Set(True)
         print(
             f"Spawned environment prop {prop.name}: kind={prop.kind}, "
             f"position={prop.position}, size={prop.size}",
@@ -377,6 +378,22 @@ def _spawn_scene_props(props) -> None:
 
     # Keep the Xform in the scene graph even for empty-only styling cases.
     UsdGeom.Xformable(root)
+
+
+def _ensure_physics_scene(simulation_rate_hz: float) -> None:
+    import omni.usd
+    from pxr import PhysxSchema, UsdPhysics
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        raise RuntimeError("Isaac Sim stage is not available")
+    scene_path = "/World/PhysicsScene"
+    if stage.GetPrimAtPath(scene_path).IsValid():
+        return
+    physics_scene = UsdPhysics.Scene.Define(stage, scene_path)
+    physx_scene = PhysxSchema.PhysxSceneAPI.Apply(physics_scene.GetPrim())
+    physx_scene.CreateEnableCCDAttr().Set(True)
+    physx_scene.CreateTimeStepsPerSecondAttr().Set(float(simulation_rate_hz))
 
 
 def main() -> int:
@@ -426,6 +443,7 @@ def main() -> int:
         # only; never add the endoscope/ECM mesh to the stage.
 
         _setup_scene_lighting()
+        _ensure_physics_scene(args.simulation_rate_hz)
         _spawn_scene_props(args.scene_model.props)
 
         import rclpy
@@ -445,7 +463,7 @@ def main() -> int:
         from dvrk_isaac_sim.config import load_robot_config
         from dvrk_isaac_sim.kinematics import CRTKECM, CRTKPSM
         from dvrk_isaac_sim.ros_interface import CRTKROSComponent
-        from dvrk_isaac_sim.usd_collision import apply_collision_meshes
+        from dvrk_isaac_sim.usd_physics_links import PhysicsLinkSync
         from dvrk_isaac_sim.usd_visual import CRTKUSDVisual
 
         rclpy.init()
@@ -455,6 +473,7 @@ def main() -> int:
         executor.add_node(clock_node)
 
         cameras = []
+        physics_links = {}
         component_lock = threading.RLock()
 
         def add_component(namespace: str, config_path: Path, frame: dict | None = None,
@@ -484,13 +503,10 @@ def main() -> int:
                 if stage.GetPrimAtPath(f"/World/{config.name}").IsValid()
                 else None
             )
-            if visual is not None:
-                collision_count = apply_collision_meshes(
-                    config.name, config.kinematics_manifest
-                )
-                print(
-                    f"Applied {collision_count} collision APIs for {config.name}",
-                    flush=True,
+            chain = getattr(component.model, "_urdf_chain", None)
+            if visual is not None and chain is not None and config.kinematics_manifest is not None:
+                physics_links[config.name] = PhysicsLinkSync(
+                    config.name, config.kinematics_manifest, chain
                 )
             camera = None
             if config.type == "ECM" and args.camera != "off":
@@ -635,6 +651,11 @@ def main() -> int:
                     state = snapshots.get(component.config.name)
                     if state is not None and visual is not None:
                         visual.update(
+                            state.joint_names, state.joint_position,
+                            state.jaw_position,
+                        )
+                    if state is not None and component.config.name in physics_links:
+                        physics_links[component.config.name].update(
                             state.joint_names, state.joint_position,
                             state.jaw_position,
                         )
