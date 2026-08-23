@@ -58,7 +58,7 @@ def test_manifest_includes_collision_items(tmp_path: Path):
     item = collision["items"][0]
     assert item["name"] == "tip_collision"
     assert item["source_link"] == "PSM1_tool_tip_link"
-    assert item["prim"] == "PSM1_RCM_yaw_link/PSM1_tool_tip_link"
+    assert item["prim"] == "PSM1_RCM_yaw_link"
     assert item["origin_xyz"] == [0.0, 0.01, 0.0]
     assert item["geometry"]["type"] == "mesh"
     assert item["geometry"]["filename"].endswith("tip.stl")
