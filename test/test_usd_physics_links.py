@@ -1,7 +1,13 @@
 import numpy as np
 
+import pytest
+
 from dvrk_isaac_sim.urdf_kinematics import _rotation, _transform
-from dvrk_isaac_sim.usd_physics_links import _candidate_collision_prim, _relative_offset_from_stage_transforms
+from dvrk_isaac_sim.usd_physics_links import (
+    _candidate_collision_prim,
+    _relative_offset_from_stage_transforms,
+    _require_collision_candidate,
+)
 
 
 class _FakeAttr:
@@ -124,3 +130,14 @@ def test_candidate_collision_prim_skips_blocked_descendant_link_subtrees():
     )
 
     assert result is prims[1]
+
+
+def test_require_collision_candidate_rejects_unmapped_psm_link():
+    with pytest.raises(RuntimeError, match="PSM1_pitch_link") as error:
+        _require_collision_candidate(
+            None,
+            {"source_link": "PSM1_pitch_link"},
+            "/World/PSM1/Geometry/world/PSM1_pitch_link",
+        )
+
+    assert "cannot create flattened collision body" in str(error.value)

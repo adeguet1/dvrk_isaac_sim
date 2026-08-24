@@ -118,12 +118,22 @@ def _matrix_to_quat_xyzw(rotation: np.ndarray) -> tuple[float, float, float, flo
     return float(x), float(y), float(z), float(w)
 
 
+def _require_collision_candidate(candidate, item: dict, source_path: str):
+    if candidate is not None:
+        return candidate
+    link_name = str(item.get("source_link", "")).strip() or str(item.get("name", "")).strip()
+    raise RuntimeError(
+        f"No collision prim matched link {link_name!r} below {source_path}; "
+        "cannot create flattened collision body"
+    )
+
+
 class PhysicsLinkSync:
     """Synchronize flattened kinematic collision rigid bodies from URDF FK."""
 
     def __init__(self, component_name: str, manifest_path: str | Path, kinematic_chain):
         import omni.usd
-        from pxr import PhysxSchema, Sdf, UsdGeom, UsdPhysics
+        from pxr import PhysxSchema, UsdGeom, UsdPhysics
 
         self._component_name = component_name
         self._stage = omni.usd.get_context().get_stage()
@@ -164,11 +174,11 @@ class PhysicsLinkSync:
         for link, item in links.items():
             prim_path = f"{root_path}/{link}"
             translate_op, orient_op, offset = self._create_flattened_link(
-                prim_path, item, UsdGeom, UsdPhysics, PhysxSchema, Sdf
+                prim_path, item, UsdGeom, UsdPhysics, PhysxSchema
             )
             self._link_ops[link] = (prim_path, offset, translate_op, orient_op)
 
-    def _create_flattened_link(self, prim_path, item, UsdGeom, UsdPhysics, PhysxSchema, Sdf):
+    def _create_flattened_link(self, prim_path, item, UsdGeom, UsdPhysics, PhysxSchema):
         from pxr import Usd
 
         link_xform = UsdGeom.Xform.Define(self._stage, prim_path)
@@ -212,35 +222,30 @@ class PhysicsLinkSync:
                 item,
                 blocked_paths,
             )
+        candidate = _require_collision_candidate(candidate, item, source_path)
 
         offset = _transform_from_origin(
             item.get("origin_xyz", [0.0, 0.0, 0.0]),
             item.get("origin_rpy", [0.0, 0.0, 0.0]),
         )
 
-        if candidate is not None:
-            world_link = UsdGeom.Xformable(source_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-            candidate_parent = candidate.GetParent()
-            if candidate_parent.IsValid():
-                world_target_parent = UsdGeom.Xformable(candidate_parent).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-            else:
-                world_target_parent = world_link
-            offset = _relative_offset_from_stage_transforms(world_link, world_target_parent)
-
-            collision_prim_path = f"{prim_path}/Collision"
-            collision_prim = self._stage.DefinePrim(collision_prim_path, candidate.GetTypeName() or "Xform")
-            collision_prim.GetReferences().AddInternalReference(str(candidate.GetPath()))
-            if not collision_prim.HasAPI(UsdPhysics.CollisionAPI):
-                UsdPhysics.CollisionAPI.Apply(collision_prim)
-            geometry_targets = [child for child in Usd.PrimRange(collision_prim) if child.IsA(UsdGeom.Gprim)]
-            for geometry in geometry_targets:
-                if not geometry.HasAPI(UsdPhysics.CollisionAPI):
-                    UsdPhysics.CollisionAPI.Apply(geometry)
+        world_link = UsdGeom.Xformable(source_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        candidate_parent = candidate.GetParent()
+        if candidate_parent.IsValid():
+            world_target_parent = UsdGeom.Xformable(candidate_parent).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         else:
-            # Keep an explicit placeholder so missing collision manifests are visible.
-            fallback = UsdGeom.Sphere.Define(self._stage, Sdf.Path(f"{prim_path}/Collision"))
-            fallback.CreateRadiusAttr(0.001)
-            UsdPhysics.CollisionAPI.Apply(fallback.GetPrim())
+            world_target_parent = world_link
+        offset = _relative_offset_from_stage_transforms(world_link, world_target_parent)
+
+        collision_prim_path = f"{prim_path}/Collision"
+        collision_prim = self._stage.DefinePrim(collision_prim_path, candidate.GetTypeName() or "Xform")
+        collision_prim.GetReferences().AddInternalReference(str(candidate.GetPath()))
+        if not collision_prim.HasAPI(UsdPhysics.CollisionAPI):
+            UsdPhysics.CollisionAPI.Apply(collision_prim)
+        geometry_targets = [child for child in Usd.PrimRange(collision_prim) if child.IsA(UsdGeom.Gprim)]
+        for geometry in geometry_targets:
+            if not geometry.HasAPI(UsdPhysics.CollisionAPI):
+                UsdPhysics.CollisionAPI.Apply(geometry)
 
         return translate_op, orient_op, offset
 

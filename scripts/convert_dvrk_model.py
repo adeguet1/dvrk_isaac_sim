@@ -26,6 +26,24 @@ def _default_output() -> Path:
 DEFAULT_OUTPUT = _default_output()
 
 
+def _strip_physics_api_schemas(line: str) -> str | None:
+    """Drop importer physics APIs while retaining mesh collision configuration."""
+    if "apiSchemas" not in line:
+        return line
+    match = re.search(r"\[([^]]*)\]", line)
+    if match is None:
+        return line
+    schemas = re.findall(r'"([^"]+)"', match.group(1))
+    removable = [schema for schema in schemas if schema.startswith(("Physics", "Physx"))]
+    if not removable:
+        return line
+    retained = [schema for schema in schemas if schema not in removable or schema == "PhysicsMeshCollisionAPI"]
+    if not retained:
+        return None
+    replacement = "[" + ", ".join(f'"{schema}"' for schema in retained) + "]"
+    return line[:match.start()] + replacement + line[match.end():]
+
+
 def _model_root() -> Path:
     configured = os.environ.get("DVRK_MODEL_PATH")
     if configured:
@@ -77,10 +95,11 @@ def _strip_physics(usd_path: str) -> None:
         lines = source.splitlines(keepends=True)
         filtered = []
         for line in lines:
-            if "apiSchemas" in line and re.search(r'"(?:Physics|Physx)', line):
+            stripped_line = _strip_physics_api_schemas(line)
+            if stripped_line is None:
                 removed += 1
                 continue
-            filtered.append(line)
+            filtered.append(stripped_line)
         if len(filtered) != len(lines) or source != original:
             layer_path.write_text("".join(filtered), encoding="utf-8")
     print(f"Removed {removed} Physics schemas for kinematic mode", flush=True)
