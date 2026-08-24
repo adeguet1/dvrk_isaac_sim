@@ -6,6 +6,28 @@ import json
 from pathlib import Path
 
 
+_PSM_COLLISION_APPROXIMATIONS = {
+    "insertion_link": "convexDecomposition",
+    "roll_link": "convexDecomposition",
+    "wrist_yaw_link": "convexDecomposition",
+    "wrist_pitch_link": "sdf",
+    "jaw_1_link": "sdf",
+    "jaw_2_link": "sdf",
+}
+
+
+def _collision_approximation(prim) -> str | None:
+    """Return the collision approximation tier for a PSM link's geometry."""
+    current = prim
+    while current.IsValid():
+        name = current.GetName().lower()
+        for link_name, approximation in _PSM_COLLISION_APPROXIMATIONS.items():
+            if name == link_name or name.endswith(f"_{link_name}"):
+                return approximation
+        current = current.GetParent()
+    return None
+
+
 def _visual_root(manifest_path: str | Path | None) -> str:
     if manifest_path is None:
         return "Geometry/world"
@@ -35,10 +57,21 @@ def _is_collision_candidate(prim) -> bool:
 
 
 def _apply_collision_api(prim, UsdPhysics) -> bool:
-    if prim.HasAPI(UsdPhysics.CollisionAPI):
-        return False
-    UsdPhysics.CollisionAPI.Apply(prim)
-    return True
+    applied = False
+    if not prim.HasAPI(UsdPhysics.CollisionAPI):
+        UsdPhysics.CollisionAPI.Apply(prim)
+        applied = True
+
+    mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(prim)
+    approximation = _collision_approximation(prim)
+    if approximation is not None:
+        mesh_collision.CreateApproximationAttr().Set(approximation)
+    return applied
+
+
+def _collision_targets(prim, Usd, UsdGeom):
+    targets = [item for item in Usd.PrimRange(prim) if item.IsA(UsdGeom.Gprim)]
+    return targets or [prim]
 
 
 def apply_collision_meshes(component_name: str, manifest_path: str | Path | None = None) -> int:
@@ -65,10 +98,6 @@ def apply_collision_meshes(component_name: str, manifest_path: str | Path | None
         if not prim.IsActive() or not _is_collision_candidate(prim):
             continue
 
-        geometry_targets = [item for item in Usd.PrimRange(prim) if item.IsA(UsdGeom.Gprim)]
-        if geometry_targets:
-            for target in geometry_targets:
-                applied += int(_apply_collision_api(target, UsdPhysics))
-        else:
-            applied += int(_apply_collision_api(prim, UsdPhysics))
+        for target in _collision_targets(prim, Usd, UsdGeom):
+            applied += int(_apply_collision_api(target, UsdPhysics))
     return applied
