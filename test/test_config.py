@@ -66,10 +66,16 @@ def test_simulator_config_is_typed_and_scene_free_by_default():
     assert config.generated_dir.is_absolute()
 
 
-def test_shipped_scenes_enable_all_camera_outputs_with_close_near_clip():
+def test_shipped_scenes_use_expected_camera_outputs_with_close_near_clip():
     config_path = ROOT / "share" / "isaac_sim.yaml.example"
+
     for scene_path in available_scene_paths(config_path):
         camera = load_scene(scene_path).camera.as_dict()
-        assert camera["transports"] == ["ros_raw", "ros_compressed", "rtsp"]
-        assert camera["ros_compressed"]["quality"] == 85
+
+        if scene_path.name == "ECM_PSM1_PSM2_PSM3_stereo_rtsp.yaml":
+            assert camera["transports"] == ["rtsp"]
+        else:
+            assert camera["transports"] == ["ros_raw", "ros_compressed", "rtsp"]
+            assert camera["ros_compressed"]["quality"] == 85
+
         assert camera["near_clip_m"] == 0.005

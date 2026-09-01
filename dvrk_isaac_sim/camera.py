@@ -89,7 +89,7 @@ class IsaacCameraPublisher:
             raise ValueError("camera.rtsp.encoding must be h264 or raw")
         if self.publish_rate <= 0.0:
             raise ValueError("camera.publish_rate_hz must be positive")
-        self._last_capture = float("-inf")
+        self._next_capture: float | None = None
         self._pose_ready = False
         self._Image = Image
         self._CompressedImage = CompressedImage
@@ -116,7 +116,20 @@ class IsaacCameraPublisher:
                 resolution=(self.width, self.height),
                 orientation=np.asarray([1.0, 0.0, 0.0, 0.0]),
             )
-            camera.initialize()
+
+            # Stereo output is rendered by the single tiled render product
+            # below.  Initializing each legacy Camera here would create two
+            # additional per-eye render products which are never read, but
+            # still consume a full render on every Isaac update.
+            needs_mono_pixels = (
+                mode == "mono"
+                and ("ros_raw" in self.transports
+                     or "ros_compressed" in self.transports)
+            )
+
+            if needs_mono_pixels:
+                camera.initialize()
+
             camera_prim_paths.append(camera_prim_path)
             # Isaac expresses focal length and aperture in the same stage
             # units. Preserve the camera's sensor width while selecting the
@@ -141,10 +154,17 @@ class IsaacCameraPublisher:
         if mode == "stereo":
             from isaacsim.sensors.experimental.rtx import TiledCameraSensor
 
+            tiled_annotators = (
+                ["rgb"]
+                if ("ros_raw" in self.transports
+                    or "ros_compressed" in self.transports)
+                else []
+            )
+
             self._tiled_sensor = TiledCameraSensor(
                 camera_prim_paths,
                 resolution=(self.height, self.width),
-                annotators=["rgb"],
+                annotators=tiled_annotators,
             )
             self._tiled_render_product_path = str(
                 self._tiled_sensor.render_product.GetPath()
@@ -301,15 +321,33 @@ class IsaacCameraPublisher:
 
     def publish(self, seconds: float, pose: Pose | None = None) -> None:
         """Publish the frame rendered with the latest pose."""
-        if seconds - self._last_capture < 1.0 / self.publish_rate:
+        capture_period = 1.0 / self.publish_rate
+
+        if (self._next_capture is None
+                or seconds + capture_period < self._next_capture):
+            self._next_capture = seconds
+
+        if seconds + 1.0e-12 < self._next_capture:
             return
+
+        elapsed_periods = max(
+            1,
+            math.floor(
+                (seconds + 1.0e-12 - self._next_capture) / capture_period
+            ) + 1,
+        )
+        self._next_capture += elapsed_periods * capture_period
+
         if pose is not None:
             self.set_pose(pose)
+
         if not self._pose_ready:
             return
+
         from builtin_interfaces.msg import Time
+
         stamp = Time(sec=int(seconds), nanosec=int((seconds - int(seconds)) * 1e9))
-        self._last_capture = seconds
+
         for index, (camera, (image_publisher, compressed_publisher, info_publisher)) in enumerate(
                 zip(self._cameras, self._publishers)):
             needs_image = (

@@ -156,7 +156,10 @@ def main() -> int:
     # Isaac Sim must be initialized before importing most Isaac modules.
     from isaacsim import SimulationApp
 
-    simulation_app = SimulationApp({"headless": args.headless, "renderer": args.renderer})
+    simulation_app = SimulationApp({
+        "headless": args.headless,
+        "renderer": args.renderer,
+    })
     nodes = []
     executor = None
     ui_window = None
