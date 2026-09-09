@@ -129,10 +129,18 @@ The joint fields are editable target values. `Apply joint targets` sends them th
 
 ## 3. Time and pause semantics
 
-The Isaac Sim runner uses a fixed, configurable kinematic timestep from
-`simulation_rate_hz` in `share/isaac_sim.yaml` (default: 120 Hz). It publishes
-`/clock` from that simulation time. All normal CRTK and camera timestamps use
-the same source.
+The Isaac Sim runner uses a dedicated fixed-rate ROS/kinematics loop configured
+by `simulation_rate_hz` in `share/isaac_sim.yaml` (default: 120 Hz). Rendering
+independently samples the newest state at the wall-clock `render_rate_hz`
+(default: 30 Hz). It publishes `/clock` from simulation time. All normal CRTK
+and camera timestamps use the same source.
+
+ROS subscription callbacks run on a separate executor thread. The periodic
+performance line includes cumulative `rx`, `apply`, `coalesce`, and `reject`
+counts for each arm that has received commands. `age` is the most recent
+callback-to-application delay; `control-state-age` shows the age of the
+kinematic snapshot at render submission and completion. These values separate
+command-path problems from a slow camera/render path.
 
 When the Isaac timeline is paused, `/clock` stops and robot state does not
 advance. Periodic CRTK state messages continue with a zero timestamp, which
@@ -209,7 +217,7 @@ gst-launch-1.0 -v \
     protocols=udp latency=0 drop-on-latency=true \
   ! rtph264depay wait-for-keyframe=true \
   ! h264parse \
-  ! nvh264dec \
+  ! nvh264dec max-display-delay=0 \
   ! queue max-size-buffers=1 leaky=downstream \
   ! videoconvert \
   ! autovideosink sync=false

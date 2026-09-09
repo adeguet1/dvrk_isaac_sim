@@ -72,7 +72,7 @@ Start the full virtual cart with the default three PSMs and kinematic ECM, or se
 ros2 launch dvrk_isaac_sim simulator.launch.py config:=/path/to/my-dvrk-isaac.yaml scene:=PSM1_420006_mono.yaml
 ```
 
-The default renderer is `RaytracedLighting`, which provides a visible viewport on the supported Isaac Sim setup. Instruments, endoscopes, and camera settings are defined by each scene. In GUI mode, the `dVRK CRTK Monitor` window lists every configured arm, shows live state and measured joints in degrees/mm, and provides joint-target and operating-state controls. The simulator adds neutral lighting and a gray environment so dark instruments remain visible.
+The default renderer is `RaytracedLighting`, which provides a visible viewport on the supported Isaac Sim setup. Instruments, endoscopes, and camera settings are defined by each scene. In GUI mode, the `dVRK CRTK Monitor` window lists every configured arm, shows live state and measured joints in degrees/mm, and provides joint-target and operating-state controls. The simulator adds neutral lighting and a gray environment so dark instruments remain visible. `simulation_rate_hz` controls the ROS/kinematics loop and `render_rate_hz` independently controls wall-clock rendering; their defaults are 120 Hz and 30 Hz. A once-per-second performance line reports real-time factor, actual control/render/camera rates, and render time.
 
 The ECM has no mesh in the full-cart scene. Its kinematic optical frame drives the Isaac camera. Mono publishes `/ECM/image_raw` and `/ECM/camera_info`. Stereo publishes one synchronized side-by-side image on `/ECM/image_raw`; its tiled RTSP stream uses `rtsp://<host>:8554/ECM`.
 
@@ -118,7 +118,7 @@ gst-launch-1.0  \
     protocols=udp latency=0 drop-on-latency=true \
   ! rtph264depay wait-for-keyframe=true \
   ! h264parse \
-  ! nvh264dec \
+  ! nvh264dec max-display-delay=0 \
   ! queue max-size-buffers=1 leaky=downstream \
   ! videoconvert \
   ! autovideosink sync=false

@@ -61,9 +61,17 @@ def test_simulator_config_is_typed_and_scene_free_by_default():
     config = load_simulator_config(ROOT / "share" / "isaac_sim.yaml.example")
     assert config.renderer == "RaytracedLighting"
     assert config.simulation_rate_hz == 120.0
+    assert config.render_rate_hz == 30.0
     assert config.headless is False
     assert config.scene is None
     assert config.generated_dir.is_absolute()
+
+
+def test_minimal_renderer_is_supported(tmp_path):
+    config_path = tmp_path / "isaac_sim.yaml"
+    config_path.write_text("renderer: MinimalRendering\n", encoding="utf-8")
+
+    assert load_simulator_config(config_path).renderer == "MinimalRendering"
 
 
 def test_shipped_scenes_use_expected_camera_outputs_with_close_near_clip():
@@ -74,8 +82,10 @@ def test_shipped_scenes_use_expected_camera_outputs_with_close_near_clip():
 
         if scene_path.name == "ECM_PSM1_PSM2_PSM3_stereo_rtsp.yaml":
             assert camera["transports"] == ["rtsp"]
+            assert camera["rtsp"]["encoding"] == "h264"
         else:
             assert camera["transports"] == ["ros_raw", "ros_compressed", "rtsp"]
             assert camera["ros_compressed"]["quality"] == 85
 
+        assert camera["rtsp"]["mount_path"] == "/ECM"
         assert camera["near_clip_m"] == 0.005

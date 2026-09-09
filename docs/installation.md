@@ -176,6 +176,42 @@ This runs the pure-Python tests and configuration validation. The headless
 Isaac Sim integration tests are opt-in with
 `python3.12 scripts/tests --isaac`.
 
+## Interactive full-cart benchmark
+
+Use the opt-in benchmark on the target GPU to exercise the full ECM/PSM1/PSM2/
+PSM3 stereo-RTSP scene through an external native ROS 2 client.  It sends safe,
+limit-clamped `servo_jp` trajectories to every arm, checks state and `/clock`
+timestamps, probes the local RTSP stream, and writes a JSON report when asked.
+
+```bash
+python3.12 scripts/benchmark_interactive.py \
+  --duration 60 \
+  --output /tmp/dvrk-isaac-interactive.json
+```
+
+This benchmark is intentionally separate from the normal test suite: its rate
+thresholds are hardware- and renderer-dependent.  Tune `--min-state-rate-hz`
+and `--min-rtsp-fps` for the target workstation, retain the JSON output with
+performance results, and use it as the interactive regression gate.
+
+For renderer and camera-resolution A/B measurements, the benchmark can override
+the renderer and create a temporary scaled scene without changing the checked-in
+scene YAML:
+
+```bash
+python3.12 scripts/benchmark_interactive.py --renderer MinimalRendering
+python3.12 scripts/benchmark_interactive.py --camera-scale 0.5
+```
+
+To separate the RTSP server/encoder path from the camera scene, compare the
+normal benchmark with `--no-rtsp-probe` (server graph, no local decoder) and
+`--disable-rtsp` (temporary scene with no RTSP graph).  The local probe uses
+the same GPU for H.264 decoding by default, so its result intentionally
+measures the end-to-end single-GPU case rather than server rendering alone.
+Use `--rtsp-decoder avdec_h264` to move only the local measurement client's
+H.264 decode to the CPU; it is useful for diagnosing same-GPU contention, not
+as a replacement for Isaac Sim's server-side encoder.
+
 ## USD asset conversion
 
 The repository does not commit generated USD files. The source of truth remains
@@ -261,17 +297,24 @@ scene:
       encoding: h264
 ```
 Set `renderer` to the desired Isaac Sim renderer in the config YAML. Set
-`simulation_rate_hz` to the fixed kinematic update rate; it defaults to 120 Hz.
+`simulation_rate_hz` to the fixed ROS/kinematic update rate and
+`render_rate_hz` to the independent wall-clock render target; they default to
+120 Hz and 30 Hz respectively.
 Mono publishes `/ECM/image_raw` and `/ECM/camera_info`. Stereo publishes one
 synchronized side-by-side image on `/ECM/image_raw`, with twice the configured
 width; RTSP streams that same tiled image on the configured `/ECM` mount path.
 Missing USD/URDF conversion artifacts are generated automatically in the
 configured `generated_dir`.
 
-The Isaac runner advances the kinematic models by one fixed timestep per
-simulation update: `dt = 1 / simulation_rate_hz`. Rendering performance can
-change the real-time factor, but does not change the configured kinematic
-timestep. The runner publishes `/clock` from this simulation time.
+The Isaac runner services ROS callbacks on their own executor thread and
+advances kinematic models on a separate fixed-rate loop with
+`dt = 1 / simulation_rate_hz`. A shared component lock makes command
+application and state publication atomic. The main Isaac thread renders only
+the newest state at a wall-clock-controlled
+`render_rate_hz`, so a slow render never queues stale intermediate poses. The
+runner publishes `/clock` from simulation time and reports real-time factor,
+actual control/render/camera rates, average/maximum render time, control-state
+age, and per-arm command counters once per second.
 
 While Isaac Sim is paused, `/clock` stops and robot positions do not advance.
 Periodic CRTK messages continue so clients can detect that the process is alive,
@@ -310,7 +353,7 @@ gst-launch-1.0 -v \
     protocols=udp latency=0 drop-on-latency=true \
   ! rtph264depay wait-for-keyframe=true \
   ! h264parse \
-  ! nvh264dec \
+  ! nvh264dec max-display-delay=0 \
   ! queue max-size-buffers=1 leaky=downstream \
   ! videoconvert \
   ! autovideosink sync=false

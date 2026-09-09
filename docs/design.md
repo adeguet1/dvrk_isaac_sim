@@ -221,7 +221,7 @@ The initial safe default is to reject invalid joint positions and report the fai
 
 ## 9. Time and determinism
 
-Simulation time is the source of timestamps when Isaac Sim is running. The simulator advances kinematic state at the fixed, user-configurable `simulation_rate_hz` (default 120 Hz), independently of rendering throughput. All state updates occur from one simulation-step callback. ROS publication must never advance robot state independently. The runner publishes `/clock`; when paused, `/clock` stops and periodic CRTK messages use zero timestamps to indicate invalid/stale data.
+Simulation time is the source of timestamps when Isaac Sim is running. A dedicated control thread services ROS and advances kinematic state at the fixed, user-configurable `simulation_rate_hz` (default 120 Hz), independently of the blocking Isaac render call. The main thread samples only the newest control state and renders it at the wall-clock-controlled `render_rate_hz` (default 30 Hz); intermediate visual states are intentionally dropped instead of queued. The runner publishes `/clock`; when paused, `/clock` stops and periodic CRTK messages use zero timestamps to indicate invalid/stale data. Once per second it reports real-time factor, actual control/simulation/render/camera rates, and render duration.
 
 Reset must restore:
 

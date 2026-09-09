@@ -16,8 +16,12 @@ loaded from config; use --config to select a saved YAML file.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 import sys
+import threading
+import time
+from typing import Any
 
 import numpy as np
 
@@ -42,6 +46,12 @@ def _arguments() -> argparse.Namespace:
                         help="override config simulation duration in seconds")
     parser.add_argument("--scene", type=Path, default=None,
                         help="override config and select a scene YAML")
+    parser.add_argument(
+        "--renderer",
+        choices=("MinimalRendering", "RaytracedLighting", "RealTimePathTracing", "PathTracing"),
+        default=None,
+        help="override the renderer selected by the simulator config",
+    )
     parser.add_argument("--run-crtk-integration-test", action="store_true",
                         help="run the test-only CRTK integration test")
     args = parser.parse_args()
@@ -55,13 +65,16 @@ def _arguments() -> argparse.Namespace:
     )
     args.scene_model = load_scene(args.scene_config)
     args.generated_dir = simulator_config.generated_dir
-    args.renderer = simulator_config.renderer
+    args.renderer = simulator_config.renderer if args.renderer is None else args.renderer
     args.headless = simulator_config.headless if args.headless is None else args.headless
     args.duration = simulator_config.duration if args.duration is None else args.duration
     args.simulation_rate_hz = simulator_config.simulation_rate_hz
+    args.render_rate_hz = simulator_config.render_rate_hz
     args.scene_camera = args.scene_model.camera.as_dict()
     args.camera = args.scene_model.camera.mode
-    if args.renderer not in {"RaytracedLighting", "RealTimePathTracing", "PathTracing"}:
+    if args.renderer not in {
+        "MinimalRendering", "RaytracedLighting", "RealTimePathTracing", "PathTracing"
+    }:
         raise ValueError(f"{config_path}: unsupported renderer {args.renderer}")
     return args
 
@@ -110,13 +123,14 @@ def _setup_scene_lighting() -> None:
     UsdGeom.Xformable(key.GetPrim()).AddRotateXYZOp().Set(Gf.Vec3d(35.0, -25.0, -30.0))
 
 
-def _configure_fixed_timestep(timeline, rate_hz: float) -> None:
-    """Configure Isaac's timeline for the requested fixed simulation rate."""
+def _configure_fixed_timestep(timeline, simulation_rate_hz: float,
+                              render_rate_hz: float) -> None:
+    """Configure independent simulation time codes and render pacing."""
     # These timeline controls are available in Isaac Sim 6.0.  Keep the
     # guarded form so configuration-only tooling can still import this file.
-    timeline.set_time_codes_per_second(float(rate_hz))
+    timeline.set_time_codes_per_second(float(simulation_rate_hz))
     if hasattr(timeline, "set_target_framerate"):
-        timeline.set_target_framerate(float(rate_hz))
+        timeline.set_target_framerate(float(render_rate_hz))
 
 
 def _ros_time(seconds: float):
@@ -132,15 +146,157 @@ def _ros_time(seconds: float):
     return result
 
 
-def _spin_some(executor, max_callbacks: int = 32) -> None:
-    """Run a bounded batch of currently ready ROS callbacks.
+@dataclass(frozen=True)
+class _RenderState:
+    joint_names: tuple[str, ...]
+    joint_position: np.ndarray
+    jaw_position: float | None
+    camera_pose: Any | None
 
-    rclpy does not expose rclcpp's ``spin_some`` API. Repeated non-blocking
-    ``spin_once`` calls provide the same behavior while the bound prevents a
-    continuously publishing topic from taking over an Isaac frame.
-    """
-    for _ in range(max_callbacks):
-        executor.spin_once(timeout_sec=0.0)
+
+@dataclass(frozen=True)
+class _ControlSnapshot:
+    simulation_time: float
+    captured_at: float
+    states: dict[str, _RenderState]
+    command_metrics: dict[str, tuple[int, int, int, int, float | None]]
+
+
+class _ControlLoop:
+    """Run ROS callbacks and kinematics independently of blocking rendering."""
+
+    def __init__(self, executor, ordered_nodes, clock_publisher, clock_type,
+                 rate_hz: float, initial_time: float,
+                 component_lock: threading.RLock | None = None) -> None:
+        self._executor = executor
+        self._ordered_nodes = ordered_nodes
+        self._clock_publisher = clock_publisher
+        self._clock_type = clock_type
+        self._period = 1.0 / rate_hz
+        self._stop = threading.Event()
+        self._state_lock = threading.Lock()
+        self.component_lock = component_lock or threading.RLock()
+        self._playing = True
+        self._simulation_time = initial_time
+        self._updates = 0
+        self._steps = 0
+        self._ros_spins = 0
+        self._exception: BaseException | None = None
+        self._snapshot = self._capture_snapshot()
+        self._ros_thread = threading.Thread(
+            target=self._spin_ros, name="dvrk-isaac-ros", daemon=True
+        )
+        self._thread = threading.Thread(
+            target=self._run, name="dvrk-isaac-control", daemon=True
+        )
+
+    def _capture_snapshot(self) -> _ControlSnapshot:
+        states = {}
+        command_metrics = {}
+        for _, component, visual, camera in self._ordered_nodes:
+            measured = component.model.measured_js()
+            states[component.config.name] = _RenderState(
+                measured.names,
+                measured.position,
+                component.jaw_position,
+                component.model.measured_cp() if camera is not None else None,
+            )
+            command_metrics[component.config.name] = component.command_metrics()
+        return _ControlSnapshot(
+            self._simulation_time, time.monotonic(), states, command_metrics
+        )
+
+    def start(self) -> None:
+        self._ros_thread.start()
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._ros_thread.is_alive():
+            self._ros_thread.join(timeout=5.0)
+        if self._thread.is_alive():
+            self._thread.join(timeout=5.0)
+
+    def set_playing(self, playing: bool) -> None:
+        with self._state_lock:
+            self._playing = bool(playing)
+
+    def snapshot(self) -> _ControlSnapshot:
+        with self._state_lock:
+            return self._snapshot
+
+    def metrics(self) -> tuple[int, int, int, float]:
+        with self._state_lock:
+            return self._updates, self._steps, self._ros_spins, self._simulation_time
+
+    def raise_if_failed(self) -> None:
+        with self._state_lock:
+            error = self._exception
+        if error is not None:
+            raise RuntimeError("CRTK control loop failed") from error
+
+    def _spin_ros(self) -> None:
+        """Service ROS independently of both control and render cadence."""
+        try:
+            while not self._stop.is_set():
+                self._executor.spin_once(timeout_sec=0.01)
+                with self._state_lock:
+                    self._ros_spins += 1
+        except BaseException as error:
+            with self._state_lock:
+                self._exception = error
+            self._stop.set()
+
+    def _run(self) -> None:
+        next_step = time.monotonic()
+        try:
+            while not self._stop.is_set():
+                now = time.monotonic()
+                wait = next_step - now
+                if wait > 0.0:
+                    self._stop.wait(wait)
+                    continue
+
+                # If Python or the OS delayed this thread, advance enough fixed
+                # steps to keep simulation time aligned with wall time. A single
+                # larger model step is equivalent for the velocity-limited
+                # kinematic interpolation and avoids a catch-up CPU spiral.
+                step_count = 1 + int(max(0.0, now - next_step) / self._period)
+                next_step += step_count * self._period
+
+                with self._state_lock:
+                    playing = self._playing
+                    if playing:
+                        self._simulation_time += step_count * self._period
+                    current_time = self._simulation_time
+
+                stamp = _ros_time(current_time)
+                with self.component_lock:
+                    for _, component, _, _ in self._ordered_nodes:
+                        component.set_simulation_stamp(stamp)
+
+                    if playing:
+                        clock = self._clock_type()
+                        clock.clock = stamp
+                        self._clock_publisher.publish(clock)
+
+                    dt = step_count * self._period if playing else 0.0
+                    for _, component, _, _ in self._ordered_nodes:
+                        component.process_pending_commands()
+                        component.model.step(dt)
+                        component.publish(stamp, valid=playing)
+
+                    snapshot = self._capture_snapshot()
+
+                with self._state_lock:
+                    self._snapshot = snapshot
+                    self._updates += 1
+                    if playing:
+                        self._steps += step_count
+        except BaseException as error:
+            with self._state_lock:
+                self._exception = error
+            self._stop.set()
 
 
 def _generated_variant(args: argparse.Namespace, entry: SceneRobot) -> tuple[Path, Path]:
@@ -159,10 +315,22 @@ def main() -> int:
     simulation_app = SimulationApp({
         "headless": args.headless,
         "renderer": args.renderer,
+        # Textured diffuse plus FXAA preserves the instrument materials while
+        # leaving GPU headroom for WiVRN's compositor and second encoder.
+        "minimal_shading_mode": 2,
+        "anti_aliasing": 2 if args.renderer == "MinimalRendering" else 3,
+        # This process currently renders on one selected GPU. Avoid enabling
+        # the multi-GPU path on single-GPU workstations and laptops.
+        "multi_gpu": False,
+        # Headless camera/RTSP runs use explicit render products. Updating the
+        # otherwise invisible 1280x720 editor viewport wastes GPU time and can
+        # make the camera miss its wall-clock target.
+        "disable_viewport_updates": args.headless,
     })
     nodes = []
     executor = None
     ui_window = None
+    control_loop = None
     try:
         from isaacsim.core.utils.extensions import enable_extension
 
@@ -190,6 +358,7 @@ def main() -> int:
         from crtk_msgs.msg import OperatingState
         from rosgraph_msgs.msg import Clock
         from omni.timeline import get_timeline_interface
+        from pxr import Sdf
 
         # This import is intentional: it is the custom-message preflight check.
         print(f"Loaded custom ROS 2 message: {OperatingState.__module__}.OperatingState", flush=True)
@@ -208,6 +377,7 @@ def main() -> int:
         executor = SingleThreadedExecutor()
 
         cameras = []
+        component_lock = threading.RLock()
 
         def add_component(namespace: str, config_path: Path, frame: dict | None = None,
                           manifest: Path | None = None, instrument: str | None = None):
@@ -225,7 +395,8 @@ def main() -> int:
             node = Node(f"dvrk_isaac_sim_{config.name}", namespace=f"/{namespace}")
             executor.add_node(node)
             component = CRTKROSComponent(
-                node, config, model, _ros_time(1.0 / args.simulation_rate_hz)
+                node, config, model, _ros_time(1.0 / args.simulation_rate_hz),
+                component_lock,
             )
             import omni.usd
 
@@ -260,9 +431,25 @@ def main() -> int:
                 if component.config.type == "PSM":
                     component.set_cartesian_reference(ecm_component.model, ecm_view_frame)
 
+        # Let Fabric Scene Delegate mirror the referenced robot hierarchy and
+        # the identity-valued CRTK xform operations once.  Subsequent joint
+        # motion writes runtime local matrices directly to Fabric instead of
+        # repeatedly invalidating the USD stage and Hydra scene.
+        simulation_app.update()
+        fabric_visual = None
+        for _, _, visual, _ in nodes:
+            if visual is not None:
+                visual.enable_fabric()
+                if fabric_visual is None:
+                    fabric_visual = visual
+        if fabric_visual is not None:
+            print("Robot visual transforms: Isaac Fabric runtime updates enabled", flush=True)
+
         if not args.headless:
             from dvrk_isaac_sim.isaac_ui import IsaacCRTKWindow
-            ui_window = IsaacCRTKWindow([component for _, component, _, _ in nodes])
+            ui_window = IsaacCRTKWindow(
+                [component for _, component, _, _ in nodes], component_lock
+            )
 
         # Advance ECM first so every PSM reads the current, not previous-step,
         # camera pose when converting Cartesian state and commands.
@@ -271,59 +458,181 @@ def main() -> int:
         )
 
         timeline = get_timeline_interface()
-        _configure_fixed_timestep(timeline, args.simulation_rate_hz)
+        _configure_fixed_timestep(
+            timeline, args.simulation_rate_hz, args.render_rate_hz
+        )
         timeline.play()
         for _, component, _, _ in nodes:
             component.publish_tool_type()
-        simulation_time = max(0.0, float(timeline.get_current_time()))
-        fixed_dt = 1.0 / args.simulation_rate_hz
         clock_publisher = nodes[0][0].create_publisher(Clock, "/clock", 10)
         if args.run_crtk_integration_test:
             print("Isaac Sim CRTK integration test running", flush=True)
             for entry in scene_entries:
                 print(f"  {entry.name} topics: /{entry.name}/measured_js, /{entry.name}/measured_cp, /{entry.name}/servo_jp", flush=True)
 
+        initial_time = max(0.0, float(timeline.get_current_time()))
+        control_loop = _ControlLoop(
+            executor, ordered_nodes, clock_publisher, Clock,
+            args.simulation_rate_hz, initial_time, component_lock,
+        )
+        control_loop.start()
+
+        render_period = 1.0 / args.render_rate_hz
+        next_render = time.monotonic()
+        last_status = next_render
+        last_updates = 0
+        last_steps = 0
+        last_ros_spins = 0
+        last_simulation_time = initial_time
+        rendered_frames = 0
+        active_camera_frames = 0
+        render_time_total = 0.0
+        render_time_max = 0.0
+        scene_update_time_total = 0.0
+        scene_update_time_max = 0.0
+        control_age_before_total = 0.0
+        control_age_after_total = 0.0
+
         while simulation_app.is_running():
+            control_loop.raise_if_failed()
+            now = time.monotonic()
+            if now < next_render:
+                time.sleep(next_render - now)
+
             playing = bool(timeline.is_playing())
-            if playing:
-                simulation_time += fixed_dt
-                timeline.set_current_time(simulation_time)
-            current_time = simulation_time
-            stamp = _ros_time(current_time)
+            control_loop.set_playing(playing)
+            snapshot = control_loop.snapshot()
+            current_time = snapshot.simulation_time
+            snapshots = snapshot.states
+            timeline.set_current_time(current_time)
 
-            if playing:
-                clock = Clock()
-                clock.clock = stamp
-                clock_publisher.publish(clock)
+            # Apply only the latest control state before rendering. Batch all
+            # robot transform edits into one USD change notice; emitting a
+            # Hydra invalidation for every individual joint makes a moving
+            # three-PSM scene dramatically slower than a stationary scene.
+            scene_update_start = time.monotonic()
+            with Sdf.ChangeBlock():
+                for _, component, visual, _ in ordered_nodes:
+                    state = snapshots.get(component.config.name)
+                    if state is not None and visual is not None:
+                        visual.update(
+                            state.joint_names, state.joint_position,
+                            state.jaw_position,
+                        )
+            if fabric_visual is not None:
+                fabric_visual.flush()
 
-            for _, component, _, _ in ordered_nodes:
-                component.set_simulation_stamp(stamp)
+            # Camera helpers may query the stage while setting their poses, so
+            # keep them outside the Sdf change block.
+            for _, component, _, camera in ordered_nodes:
+                state = snapshots.get(component.config.name)
+                if state is None:
+                    continue
+                if camera is not None and playing and state.camera_pose is not None:
+                    camera.set_pose(state.camera_pose)
+            scene_update_elapsed = time.monotonic() - scene_update_start
+            scene_update_time_total += scene_update_elapsed
+            scene_update_time_max = max(
+                scene_update_time_max, scene_update_elapsed
+            )
 
-            _spin_some(executor)
-
-            for node, component, visual, camera in ordered_nodes:
-                component.process_pending_commands()
-                component.model.step(fixed_dt if playing else 0.0)
-                measured = component.model.measured_js()
-                if visual is not None:
-                    visual.update(
-                        measured.names, measured.position,
-                        component.jaw_position,
-                    )
-                component.publish(stamp, valid=playing)
-                if camera is not None and playing:
-                    # Update the camera before the render tick below so the
-                    # captured frame uses the current ECM pose.
-                    camera.set_pose(component.model.measured_cp())
-
-            # Render after kinematic state and camera poses are current, then
-            # publish the rendered frame.
+            render_start = time.monotonic()
+            control_age_before_total += render_start - snapshot.captured_at
             simulation_app.update()
+            render_elapsed = time.monotonic() - render_start
+            control_age_after_total += time.monotonic() - snapshot.captured_at
+            rendered_frames += 1
+            render_time_total += render_elapsed
+            render_time_max = max(render_time_max, render_elapsed)
+
+            # ROS image publication is subscriber-gated. The RTSP writer is
+            # attached once and captures this wall-clock-paced render product.
             for _, _, _, camera in ordered_nodes:
                 if camera is not None and playing:
                     camera.publish(current_time)
+                    active_camera_frames += 1
             if ui_window is not None:
                 ui_window.update()
+
+            render_end = time.monotonic()
+            next_render += render_period
+            if next_render < render_end:
+                next_render = render_end
+
+            if render_end - last_status >= 1.0:
+                elapsed = render_end - last_status
+                updates, steps, ros_spins, simulation_time = control_loop.metrics()
+                update_hz = (updates - last_updates) / elapsed
+                step_hz = (steps - last_steps) / elapsed
+                ros_hz = (ros_spins - last_ros_spins) / elapsed
+                render_hz = rendered_frames / elapsed
+                camera_hz = active_camera_frames / elapsed
+                real_time_factor = (
+                    (simulation_time - last_simulation_time) / elapsed
+                )
+                average_render_ms = (
+                    1000.0 * render_time_total / rendered_frames
+                    if rendered_frames else 0.0
+                )
+                average_control_age_before_ms = (
+                    1000.0 * control_age_before_total / rendered_frames
+                    if rendered_frames else 0.0
+                )
+                average_control_age_after_ms = (
+                    1000.0 * control_age_after_total / rendered_frames
+                    if rendered_frames else 0.0
+                )
+                command_text = "; ".join(
+                    f"{name}=rx:{received}/apply:{applied}/"
+                    f"coalesce:{coalesced}/reject:{rejected}/"
+                    f"age:{age_ms:.1f}ms"
+                    for name, (
+                        received, applied, coalesced, rejected, age_ms
+                    ) in snapshot.command_metrics.items()
+                    if received and age_ms is not None
+                )
+                if ui_window is not None:
+                    ui_window.set_performance({
+                        "control": f"{update_hz:.1f} Hz (target {args.simulation_rate_hz:.1f})",
+                        "simulation": f"{step_hz:.1f} Hz",
+                        "ros": f"{ros_hz:.1f} spin/s",
+                        "render": f"{render_hz:.1f} Hz; {average_render_ms:.1f} ms/frame",
+                        "camera": f"{camera_hz:.1f} Hz",
+                        "timing": (
+                            f"RTF {real_time_factor:.3f}; "
+                            f"state age {average_control_age_after_ms:.1f} ms"
+                        ),
+                    })
+                print(
+                    "Simulator performance: "
+                    f"real-time-factor={real_time_factor:.3f}; "
+                    f"control={update_hz:.1f} Hz; "
+                    f"simulation-steps={step_hz:.1f} Hz; "
+                    f"ros={ros_hz:.1f} spin/s; "
+                    f"render={render_hz:.1f} Hz; "
+                    f"camera={camera_hz:.1f} Hz; "
+                    f"scene-update={1000.0 * scene_update_time_total / rendered_frames:.1f} ms avg/"
+                    f"{1000.0 * scene_update_time_max:.1f} ms max; "
+                    f"render-time={average_render_ms:.1f} ms avg/"
+                    f"{1000.0 * render_time_max:.1f} ms max; "
+                    f"control-state-age={average_control_age_before_ms:.1f} ms submit/"
+                    f"{average_control_age_after_ms:.1f} ms rendered"
+                    + (f"; commands[{command_text}]" if command_text else ""),
+                    flush=True,
+                )
+                last_status = render_end
+                last_updates = updates
+                last_steps = steps
+                last_ros_spins = ros_spins
+                last_simulation_time = simulation_time
+                rendered_frames = 0
+                active_camera_frames = 0
+                render_time_total = 0.0
+                render_time_max = 0.0
+                scene_update_time_total = 0.0
+                scene_update_time_max = 0.0
+                control_age_before_total = 0.0
+                control_age_after_total = 0.0
 
             if args.duration > 0.0 and playing and current_time >= args.duration:
                 break
@@ -337,6 +646,8 @@ def main() -> int:
         traceback.print_exc()
         raise
     finally:
+        if control_loop is not None:
+            control_loop.stop()
         if ui_window is not None:
             ui_window.close()
         if executor is not None:

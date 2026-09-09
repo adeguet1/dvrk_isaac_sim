@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from typing import Any
 
 import numpy as np
@@ -33,22 +34,52 @@ class IsaacCRTKWindow:
     _STATE_COMMANDS = ("enable", "disable", "pause", "resume", "home", "unhome", "fault", "clear_fault")
     _STATE_COMMAND_PLACEHOLDER = "..."
 
-    def __init__(self, components: list[Any]) -> None:
+    def __init__(self, components: list[Any],
+                 component_lock: threading.RLock | None = None) -> None:
         import omni.ui as ui
 
         self._ui = ui
         self._components = components
+        self._component_lock = component_lock or threading.RLock()
         self._fields: dict[str, list[Any]] = {}
         self._dirty: set[str] = set()
         self._refreshing = False
         self._refresh_counter = 0
+        self._performance: dict[str, str] = {}
+        self._performance_labels: dict[str, Any] = {}
         self._window = ui.Window("dVRK CRTK Monitor", width=520, height=760)
         with self._window.frame:
             with ui.ScrollingFrame(horizontal_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_ALWAYS_OFF):
                 with ui.VStack(spacing=8, height=0):
+                    self._add_performance_panel()
                     for component in components:
                         self._add_component(component)
         self.update()
+
+    def _add_performance_panel(self) -> None:
+        """Create a compact display-only summary of the simulator loops."""
+        ui = self._ui
+        with ui.CollapsableFrame("Performance", collapsed=False):
+            with ui.VStack(spacing=3, height=0):
+                for key, title in (
+                    ("control", "Kinematic control"),
+                    ("simulation", "Simulation steps"),
+                    ("ros", "ROS executor"),
+                    ("render", "Render"),
+                    ("camera", "Camera"),
+                    ("timing", "Timing"),
+                ):
+                    with ui.HStack(spacing=5):
+                        ui.Label(f"{title}:", width=130)
+                        self._performance_labels[key] = ui.Label("collecting…", width=330)
+
+    def set_performance(self, values: dict[str, str]) -> None:
+        """Receive rate/timing values sampled by the simulator main loop.
+
+        The UI only stores already-aggregated strings: it does not inspect ROS
+        or simulator state and therefore cannot add work to those loops.
+        """
+        self._performance = dict(values)
 
     def _add_component(self, component: Any) -> None:
         ui = self._ui
@@ -121,7 +152,8 @@ class IsaacCRTKWindow:
     def _command_state(self, name: str, command: str) -> None:
         component = self._component(name)
         if component is not None:
-            component.command_state(command)
+            with self._component_lock:
+                component.command_state(command)
 
     def _combo_command(self, name: str, combo: Any) -> None:
         # Isaac Sim omni.ui ComboBox value models expose the selected item
@@ -142,7 +174,9 @@ class IsaacCRTKWindow:
         for joint, _measured, model, _field in self._fields[name]["joints"]:
             value = model.as_float
             values.append(math.radians(value) if joint.type == "revolute" else value / 1000.0)
-        if component.command_joint_position(values):
+        with self._component_lock:
+            accepted = component.command_joint_position(values)
+        if accepted:
             self._dirty.discard(name)
 
     def _apply_jaw(self, name: str) -> None:
@@ -151,7 +185,9 @@ class IsaacCRTKWindow:
         if component is None or controls is None:
             return
         _measured, model, _field = controls
-        if component.command_jaw_position(math.radians(model.as_float)):
+        with self._component_lock:
+            accepted = component.command_jaw_position(math.radians(model.as_float))
+        if accepted:
             self._dirty.discard(name)
 
     def _apply_cartesian(self, name: str) -> None:
@@ -170,7 +206,9 @@ class IsaacCRTKWindow:
             [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
             [-sp, cp * sr, cp * cr],
         ])
-        if component.command_cartesian_position(Pose(position, orientation)):
+        with self._component_lock:
+            accepted = component.command_cartesian_position(Pose(position, orientation))
+        if accepted:
             self._dirty.discard(name)
 
     def update(self) -> None:
@@ -180,49 +218,55 @@ class IsaacCRTKWindow:
             return
         self._refreshing = True
         try:
-            for component in self._components:
-                name = component.config.name
-                controls = self._fields.get(name)
-                if controls is None:
-                    continue
-                controls["state"].text = f"State: {component.operating_state}"
-                controls["homed"].text = f"Homed: {'Yes' if component.is_homed else 'No'}"
-                measured = component.model.measured_js()
-                goal = component.model.goal_js()
-                for index, (joint, measured_label, model, _field) in enumerate(controls["joints"]):
-                    measured_value = float(measured.position[index])
-                    goal_value = float(goal.position[index])
-                    if joint.type == "revolute":
-                        measured_value = math.degrees(measured_value)
-                        goal_value = math.degrees(goal_value)
-                        unit = "deg"
-                    else:
-                        measured_value *= 1000.0
-                        goal_value *= 1000.0
-                        unit = "mm"
-                    measured_label.text = f"{measured_value:8.2f} {unit}"
-                    if name not in self._dirty:
-                        model.set_value(goal_value)
-                cartesian = component.model.measured_cp()
-                cartesian_values = [
-                    float(cartesian.position[0]) * 1000.0,
-                    float(cartesian.position[1]) * 1000.0,
-                    float(cartesian.position[2]) * 1000.0,
-                    *(math.degrees(value) for value in _rpy_from_matrix(cartesian.orientation)),
-                ]
-                if name not in self._dirty:
-                    for model, value in zip(controls["cartesian"], cartesian_values):
-                        model.set_value(value)
-                if controls["jaw"] is not None:
-                    jaw_measured, jaw_model, _jaw_field = controls["jaw"]
-                    jaw_position = component.jaw_position
-                    if jaw_position is not None:
-                        jaw_value = math.degrees(float(jaw_position))
-                        jaw_measured.text = f"{jaw_value:8.2f} deg"
-                        if name not in self._dirty:
-                            jaw_model.set_value(jaw_value)
+            with self._component_lock:
+                self._update_components()
+            for key, label in self._performance_labels.items():
+                label.text = self._performance.get(key, "collecting…")
         finally:
             self._refreshing = False
+
+    def _update_components(self) -> None:
+        for component in self._components:
+            name = component.config.name
+            controls = self._fields.get(name)
+            if controls is None:
+                continue
+            controls["state"].text = f"State: {component.operating_state}"
+            controls["homed"].text = f"Homed: {'Yes' if component.is_homed else 'No'}"
+            measured = component.model.measured_js()
+            goal = component.model.goal_js()
+            for index, (joint, measured_label, model, _field) in enumerate(controls["joints"]):
+                measured_value = float(measured.position[index])
+                goal_value = float(goal.position[index])
+                if joint.type == "revolute":
+                    measured_value = math.degrees(measured_value)
+                    goal_value = math.degrees(goal_value)
+                    unit = "deg"
+                else:
+                    measured_value *= 1000.0
+                    goal_value *= 1000.0
+                    unit = "mm"
+                measured_label.text = f"{measured_value:8.2f} {unit}"
+                if name not in self._dirty:
+                    model.set_value(goal_value)
+            cartesian = component.model.measured_cp()
+            cartesian_values = [
+                float(cartesian.position[0]) * 1000.0,
+                float(cartesian.position[1]) * 1000.0,
+                float(cartesian.position[2]) * 1000.0,
+                *(math.degrees(value) for value in _rpy_from_matrix(cartesian.orientation)),
+            ]
+            if name not in self._dirty:
+                for model, value in zip(controls["cartesian"], cartesian_values):
+                    model.set_value(value)
+            if controls["jaw"] is not None:
+                jaw_measured, jaw_model, _jaw_field = controls["jaw"]
+                jaw_position = component.jaw_position
+                if jaw_position is not None:
+                    jaw_value = math.degrees(float(jaw_position))
+                    jaw_measured.text = f"{jaw_value:8.2f} deg"
+                    if name not in self._dirty:
+                        jaw_model.set_value(jaw_value)
 
     def close(self) -> None:
         self._window.visible = False

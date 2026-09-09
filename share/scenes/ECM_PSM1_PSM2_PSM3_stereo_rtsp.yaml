@@ -22,9 +22,9 @@ scene:
     baseline_m: 0.006
     publish_rate_hz: 30.0
     transports: [rtsp]
-    # "raw" selects CUDA frames as the input to kit-livestream's
-    # zero-latency H.264 encoder; the RTSP wire format remains H.264.
-    rtsp: {port: 8554, mount_path: /ECM, encoding: raw}
+    # Pre-encode in the render pipeline. Isaac Sim documents this as more
+    # efficient than handing raw CUDA frames to the RTSP server for encoding.
+    rtsp: {port: 8554, mount_path: /ECM, encoding: h264}
   robots:
     - config: share/arms/PSM1.yaml
       instrument: "420006"

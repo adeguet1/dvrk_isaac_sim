@@ -20,6 +20,7 @@ class SimulatorConfig:
     headless: bool
     duration: float
     simulation_rate_hz: float
+    render_rate_hz: float
     ros_distro: str
     rmw_implementation: str
     scene: str | None
@@ -94,7 +95,9 @@ def load_simulator_config(path: str | Path) -> SimulatorConfig:
     if generated_dir is None:
         raise ValueError(f"{source}: generated_dir is required")
     renderer = str(value("renderer", "RaytracedLighting"))
-    if renderer not in {"RaytracedLighting", "RealTimePathTracing", "PathTracing"}:
+    if renderer not in {
+        "MinimalRendering", "RaytracedLighting", "RealTimePathTracing", "PathTracing"
+    }:
         raise ValueError(f"{source}: unsupported renderer {renderer}")
     duration = float(value("duration", 0.0))
     if duration < 0.0:
@@ -102,6 +105,9 @@ def load_simulator_config(path: str | Path) -> SimulatorConfig:
     simulation_rate_hz = float(value("simulation_rate_hz", 120.0))
     if simulation_rate_hz <= 0.0:
         raise ValueError(f"{source}: simulation_rate_hz must be positive")
+    render_rate_hz = float(value("render_rate_hz", 30.0))
+    if render_rate_hz <= 0.0:
+        raise ValueError(f"{source}: render_rate_hz must be positive")
     return SimulatorConfig(
         path=source,
         isaac_sim_dir=path_value("isaac_sim_dir"),
@@ -110,6 +116,7 @@ def load_simulator_config(path: str | Path) -> SimulatorConfig:
         headless=bool(value("headless", False)),
         duration=duration,
         simulation_rate_hz=simulation_rate_hz,
+        render_rate_hz=render_rate_hz,
         ros_distro=str(value("ros_distro", "jazzy")),
         rmw_implementation=str(value("rmw_implementation", "rmw_fastrtps_cpp")),
         scene=str(value("scene")) if value("scene") not in (None, "") else None,
@@ -161,9 +168,30 @@ def _robot_config_path(scene_path: Path, configured: Any) -> Path:
     if not configured:
         raise ValueError(f"{scene_path}: scene robot is missing config")
     path = Path(str(configured)).expanduser()
-    if not path.is_absolute():
-        path = scene_path.parent.parent.parent / path
-    return path.resolve()
+    if path.is_absolute():
+        return path.resolve()
+
+    # A standalone scene may provide a custom robot definition next to its
+    # package root.  Otherwise use the canonical definitions installed with
+    # dvrk_isaac_sim, so scene bundles need not duplicate ECM/PSM YAML files.
+    scene_relative = (scene_path.parent.parent.parent / path).resolve()
+    if scene_relative.is_file():
+        return scene_relative
+
+    # Keep scene/configuration tooling usable outside a sourced ROS
+    # environment.  Ament is only needed for an installed package whose scene
+    # refers to the package-owned arm definitions.
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        package_relative = (Path(get_package_share_directory("dvrk_isaac_sim")) /
+                            path).resolve()
+        if package_relative.is_file():
+            return package_relative
+    except ModuleNotFoundError:
+        pass
+
+    return scene_relative
 
 
 def load_scene(scene_path: str | Path) -> SceneConfig:

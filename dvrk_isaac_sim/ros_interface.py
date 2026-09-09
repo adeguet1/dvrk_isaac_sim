@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from typing import Iterable
 
 import numpy as np
@@ -29,13 +30,16 @@ from .operating_state import CRTKOperatingState
 class CRTKROSComponent:
     """ROS 2 adapter exposing CRTK topics for one kinematic component."""
 
-    def __init__(self, node, config: RobotConfig, model: CRTKComponent, simulation_stamp=None):
+    def __init__(self, node, config: RobotConfig, model: CRTKComponent,
+                 simulation_stamp=None,
+                 component_lock: threading.RLock | None = None):
         from crtk_msgs.msg import OperatingState, StringStamped
         from geometry_msgs.msg import PoseStamped, TwistStamped
         from sensor_msgs.msg import JointState
         from std_msgs.msg import String
 
         self.node = node
+        self._component_lock = component_lock or threading.RLock()
         self.config = config
         self.model = model
         self._JointState = JointState
@@ -61,6 +65,12 @@ class CRTKROSComponent:
         # Servo commands can arrive faster than the Isaac update loop. Keep
         # only the newest command and solve IK from the simulation thread.
         self._pending_servo_cp = None
+        self._pending_servo_cp_received_at = None
+        self._commands_received = 0
+        self._commands_applied = 0
+        self._commands_coalesced = 0
+        self._commands_rejected = 0
+        self._last_command_age_ms: float | None = None
         self._last_published_busy = None
         self._motion_busy = False
         self._motion_start_stamp: tuple[int, int] | None = None
@@ -94,19 +104,36 @@ class CRTKROSComponent:
             if config.type == "PSM" else None
         )
 
-        node.create_subscription(JointState, "move_jp", self._move_jp_callback, 10)
-        node.create_subscription(JointState, "servo_jp", self._servo_jp_callback, 10)
-        node.create_subscription(PoseStamped, "move_cp", self._move_cp_callback, 10)
-        node.create_subscription(PoseStamped, "servo_cp", self._servo_cp_callback, 1)
+        def locked(callback):
+            def invoke(message):
+                with self._component_lock:
+                    callback(message)
+            return invoke
+
+        node.create_subscription(
+            JointState, "move_jp", locked(self._move_jp_callback), 10
+        )
+        # Servo inputs are superseding setpoints. A depth-one queue prevents
+        # old controller samples from being replayed after a brief CPU/render
+        # stall, which would add visible arm and jaw lag.
+        node.create_subscription(
+            JointState, "servo_jp", locked(self._servo_jp_callback), 1
+        )
+        node.create_subscription(
+            PoseStamped, "move_cp", locked(self._move_cp_callback), 10
+        )
+        node.create_subscription(
+            PoseStamped, "servo_cp", locked(self._servo_cp_callback), 1
+        )
         if self._has_jaw:
             self._jaw_move_subscription = node.create_subscription(
-                JointState, "jaw/move_jp", self._jaw_servo_jp_callback, 10
+                JointState, "jaw/move_jp", locked(self._jaw_servo_jp_callback), 10
             )
             self._jaw_servo_subscription = node.create_subscription(
-                JointState, "jaw/servo_jp", self._jaw_servo_jp_callback, 10
+                JointState, "jaw/servo_jp", locked(self._jaw_servo_jp_callback), 1
             )
         self._state_command_subscription = node.create_subscription(
-            StringStamped, "state_command", self._state_command_callback, 10
+            StringStamped, "state_command", locked(self._state_command_callback), 10
         )
         self._publish_operating_state(self._event_stamp())
         self._publish_info("initialized; state is ENABLED")
@@ -251,6 +278,27 @@ class CRTKROSComponent:
         """Current logical PSM jaw position in radians."""
         return self._jaw_position if self._has_jaw else None
 
+    def command_metrics(self) -> tuple[int, int, int, int, float | None]:
+        """Return cumulative receive/apply counters for latency diagnostics."""
+        return (
+            self._commands_received,
+            self._commands_applied,
+            self._commands_coalesced,
+            self._commands_rejected,
+            self._last_command_age_ms,
+        )
+
+    def _command_received(self) -> float:
+        self._commands_received += 1
+        return time.monotonic()
+
+    def _command_applied(self, received_at: float) -> None:
+        self._commands_applied += 1
+        self._last_command_age_ms = 1000.0 * (time.monotonic() - received_at)
+
+    def _command_rejected(self) -> None:
+        self._commands_rejected += 1
+
     def command_jaw_position(self, position: float) -> bool:
         """Apply a GUI/ROS-equivalent jaw target with instrument limits."""
         if not self._has_jaw or not self._motion_allowed("jaw command"):
@@ -337,16 +385,22 @@ class CRTKROSComponent:
         self.node.get_logger().info(f"{self.config.name} {state_text}")
 
     def _jaw_servo_jp_callback(self, message) -> None:
+        received_at = self._command_received()
         if not self._motion_allowed("jaw/servo_jp"):
+            self._command_rejected()
             return
         try:
             position = jaw_position_from_message(message)
         except ValueError as error:
+            self._command_rejected()
             self.node.get_logger().warning(f"{self.config.name} rejected jaw/servo_jp: {error}")
             return
         # The virtual instrument has no jaw dynamics. Keep a single logical jaw
         # position and report it immediately as both measured and setpoint state.
-        self.command_jaw_position(position)
+        if self.command_jaw_position(position):
+            self._command_applied(received_at)
+        else:
+            self._command_rejected()
 
     def _motion_allowed(self, command: str) -> bool:
         if self._operating_state.accepts_motion:
@@ -362,26 +416,36 @@ class CRTKROSComponent:
         )
 
     def _move_jp_callback(self, message) -> None:
+        received_at = self._command_received()
         if not self._motion_allowed("move_jp"):
+            self._command_rejected()
             return
         try:
             self.model.move_jp(self._positions_from_message(message))
         except ValueError as error:
+            self._command_rejected()
             self.node.get_logger().warning(f"{self.config.name} rejected move_jp: {error}")
             return
         self._publish_motion_edges()
+        self._command_applied(received_at)
 
     def _servo_jp_callback(self, message) -> None:
+        received_at = self._command_received()
         if not self._motion_allowed("servo_jp"):
+            self._command_rejected()
             return
         try:
             self.model.servo_jp(self._positions_from_message(message))
         except ValueError as error:
+            self._command_rejected()
             self.node.get_logger().warning(f"{self.config.name} rejected servo_jp: {error}")
             return
+        self._command_applied(received_at)
 
     def _move_cp_callback(self, message) -> None:
+        received_at = self._command_received()
         if not self._motion_allowed("move_cp"):
+            self._command_rejected()
             return
         try:
             result = self.model.move_cp(
@@ -390,24 +454,34 @@ class CRTKROSComponent:
             if not result.success:
                 self._ik_failure("move_cp", result.message)
                 self._publish_motion_failure()
+                self._command_rejected()
             else:
                 self._clear_ik_warning()
                 self._publish_motion_edges()
+                self._command_applied(received_at)
         except ValueError as error:
+            self._command_rejected()
             self._publish_warning(f"rejected move_cp: {error}")
             self.node.get_logger().warning(f"{self.config.name} rejected move_cp: {error}")
             self._publish_motion_failure()
 
     def _servo_cp_callback(self, message) -> None:
+        received_at = self._command_received()
+        if self._pending_servo_cp is not None:
+            self._commands_coalesced += 1
         self._pending_servo_cp = message
+        self._pending_servo_cp_received_at = received_at
 
     def process_pending_commands(self) -> None:
         """Apply the newest deferred servo command from the simulation loop."""
         message = self._pending_servo_cp
+        received_at = self._pending_servo_cp_received_at
         self._pending_servo_cp = None
+        self._pending_servo_cp_received_at = None
         if message is None:
             return
         if not self._motion_allowed("servo_cp"):
+            self._command_rejected()
             return
         try:
             result = self.model.move_cp(
@@ -415,9 +489,12 @@ class CRTKROSComponent:
             )
             if not result.success:
                 self._ik_failure("servo_cp", result.message)
+                self._command_rejected()
             else:
                 self._clear_ik_warning()
+                self._command_applied(received_at)
         except ValueError as error:
+            self._command_rejected()
             self._publish_warning(f"rejected servo_cp: {error}")
             self.node.get_logger().warning(f"{self.config.name} rejected servo_cp: {error}")
 

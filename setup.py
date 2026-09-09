@@ -16,6 +16,7 @@ script_files = [
     "scripts/convert_dvrk_model.py",
     "scripts/generate_cart_frames.py",
     "scripts/validate_config.py",
+    "scripts/benchmark_interactive.py",
     "scripts/_isaac_sim_build.py",
 ]
 

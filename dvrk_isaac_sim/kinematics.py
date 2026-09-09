@@ -79,16 +79,41 @@ class CRTKComponent:
         self._q = config.home_position.copy()
         self._qdot = np.zeros(len(config.joints), dtype=float)
         self._target_q = self._q.copy()
+        self._joint_names = tuple(joint.name for joint in config.joints)
+        self._joint_types = tuple(joint.type for joint in config.joints)
+        self._velocity_limits = np.asarray(
+            [joint.velocity for joint in config.joints], dtype=float
+        )
+        self._lower_limits = np.asarray(
+            [joint.lower for joint in config.joints], dtype=float
+        )
+        self._upper_limits = np.asarray(
+            [joint.upper for joint in config.joints], dtype=float
+        )
         self._adaptor_offset = float(adaptor_offset)
         self._adaptor_rpy = adaptor_rpy
         self._joint_origins = self._make_joint_origins()
+        self._joint_axes_cache = self._joint_axes()
+        self._joint_origin_transforms = tuple(
+            _transform(_rpy_matrix(*origin_rpy), origin_xyz)
+            for origin_xyz, origin_rpy in self._joint_origins
+        )
+        self._base_rotation = _quaternion_matrix_xyzw(
+            self.config.base_orientation_xyzw
+        )
+        self._base_transform = _transform(
+            self._base_rotation, self.config.base_position
+        )
+        self._cached_q: np.ndarray | None = None
+        self._cached_transform: np.ndarray | None = None
+        self._cached_jacobian: np.ndarray | None = None
         self._urdf_chain = (UrdfKinematicChain(config.kinematics_manifest)
                             if config.kinematics_manifest is not None
                             and config.kinematics_manifest.is_file() else None)
-        if self._urdf_chain is not None and self._urdf_chain.active_joints != tuple(joint.name for joint in config.joints):
+        if self._urdf_chain is not None and self._urdf_chain.active_joints != self._joint_names:
             raise ValueError(
                 f"URDF manifest joints {self._urdf_chain.active_joints} do not match "
-                f"configured joints {tuple(joint.name for joint in config.joints)}"
+                f"configured joints {self._joint_names}"
             )
 
     def _make_joint_origins(self) -> tuple[tuple[np.ndarray, tuple[float, float, float]], ...]:
@@ -105,32 +130,30 @@ class CRTKComponent:
             raise ValueError("joint position has the wrong size")
         if self._urdf_chain is not None:
             transform, jacobian = self._urdf_chain.forward(
-                q, tuple(joint.name for joint in self.config.joints)
+                q, self._joint_names
             )
-            base_rotation = _quaternion_matrix_xyzw(self.config.base_orientation_xyzw)
-            base_transform = _transform(base_rotation, self.config.base_position)
-            transform = base_transform @ transform
-            jacobian[:3, :] = base_rotation @ jacobian[:3, :]
-            jacobian[3:, :] = base_rotation @ jacobian[3:, :]
+            transform = self._base_transform @ transform
+            jacobian[:3, :] = self._base_rotation @ jacobian[:3, :]
+            jacobian[3:, :] = self._base_rotation @ jacobian[3:, :]
             return transform, jacobian
-        transform = _transform(_quaternion_matrix_xyzw(self.config.base_orientation_xyzw), self.config.base_position)
+        transform = self._base_transform.copy()
         axes_world = []
         origins_world = []
-        joint_types = []
-        for index, (joint, axis, (origin_xyz, origin_rpy)) in enumerate(zip(self.config.joints, self._joint_axes(), self._joint_origins)):
-            origin_transform = _transform(_rpy_matrix(*origin_rpy), origin_xyz)
+        for index, (joint_type, axis, origin_transform) in enumerate(zip(
+                self._joint_types, self._joint_axes_cache,
+                self._joint_origin_transforms)):
             transform = transform @ origin_transform
             origins_world.append(transform[:3, 3].copy())
             axes_world.append(transform[:3, :3] @ axis)
-            joint_types.append(joint.type)
-            if joint.type == "revolute":
+            if joint_type == "revolute":
                 transform = transform @ _transform(_rotation(axis, q[index]), [0.0, 0.0, 0.0])
             else:
                 transform = transform @ _transform(np.eye(3), axis * q[index])
 
         position = transform[:3, 3]
         jacobian = np.zeros((6, len(self.config.joints)))
-        for index, (axis, origin, joint_type) in enumerate(zip(axes_world, origins_world, joint_types)):
+        for index, (axis, origin, joint_type) in enumerate(
+                zip(axes_world, origins_world, self._joint_types)):
             if joint_type == "revolute":
                 jacobian[:3, index] = np.cross(axis, position - origin)
                 jacobian[3:, index] = axis
@@ -138,23 +161,34 @@ class CRTKComponent:
                 jacobian[:3, index] = axis
         return transform, jacobian
 
+    def _measured_forward_with_jacobian(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return cached FK/Jacobian state for the current measured joints."""
+        if self._cached_q is None or not np.array_equal(self._cached_q, self._q):
+            transform, jacobian = self._forward_with_jacobian(self._q)
+            self._cached_q = self._q.copy()
+            self._cached_transform = transform
+            self._cached_jacobian = jacobian
+        assert self._cached_transform is not None
+        assert self._cached_jacobian is not None
+        return self._cached_transform, self._cached_jacobian
+
     def measured_js(self) -> JointState:
-        return JointState(tuple(joint.name for joint in self.config.joints), self._q.copy(), self._qdot.copy())
+        return JointState(self._joint_names, self._q.copy(), self._qdot.copy())
 
     def measured_cp(self, frame: str | None = None) -> Pose:
         if frame not in (None, self.config.tool_frame, self.config.adaptor_frame):
             raise ValueError(f"unknown frame {frame!r}")
-        transform, _ = self._forward_with_jacobian(self._q)
+        transform, _ = self._measured_forward_with_jacobian()
         return Pose(transform[:3, 3].copy(), transform[:3, :3].copy())
 
     def measured_cv(self, frame: str | None = None) -> Twist:
-        _, jacobian = self._forward_with_jacobian(self._q)
+        _, jacobian = self._measured_forward_with_jacobian()
         velocity = jacobian @ self._qdot
         return Twist(velocity[:3].copy(), velocity[3:].copy())
 
     def goal_js(self) -> JointState:
         """Return the current move/servo joint goal using CRTK naming."""
-        return JointState(tuple(joint.name for joint in self.config.joints), self._target_q.copy(), np.zeros_like(self._target_q))
+        return JointState(self._joint_names, self._target_q.copy(), np.zeros_like(self._target_q))
 
     def is_busy(self) -> bool:
         return bool(np.any(np.abs(self._q - self._target_q) > 1e-9))
@@ -170,7 +204,7 @@ class CRTKComponent:
         if dt < 0.0:
             raise ValueError("dt must be non-negative")
         delta = self._target_q - self._q
-        max_delta = np.array([joint.velocity for joint in self.config.joints]) * dt
+        max_delta = self._velocity_limits * dt
         applied = np.clip(delta, -max_delta, max_delta)
         self._qdot = applied / dt if dt > 0.0 else np.zeros_like(applied)
         self._q += applied
@@ -181,15 +215,21 @@ class CRTKComponent:
         values = self._q if q is None else self._validate_joint_position(q)
         if frame not in (None, self.config.tool_frame, self.config.adaptor_frame):
             raise ValueError(f"unknown frame {frame!r}")
-        transform, _ = self._forward_with_jacobian(values)
+        transform, _ = (
+            self._measured_forward_with_jacobian()
+            if q is None else self._forward_with_jacobian(values)
+        )
         return Pose(transform[:3, 3].copy(), transform[:3, :3].copy())
 
     def compute_jacobian(self, q: Iterable[float] | None = None, frame: str | None = None) -> np.ndarray:
         values = self._q if q is None else self._validate_joint_position(q)
         if frame not in (None, self.config.tool_frame, self.config.adaptor_frame):
             raise ValueError(f"unknown frame {frame!r}")
-        _, jacobian = self._forward_with_jacobian(values)
-        return jacobian
+        _, jacobian = (
+            self._measured_forward_with_jacobian()
+            if q is None else self._forward_with_jacobian(values)
+        )
+        return jacobian.copy()
 
     def compute_ik(self, target: Pose, seed: Iterable[float] | None = None, max_iterations: int = 100) -> IKResult:
         """Solve Cartesian IK, including orientation when the chain has six DOFs."""
@@ -197,7 +237,8 @@ class CRTKComponent:
         use_orientation = len(self.config.joints) >= 6
         tolerance = 1e-5
         for iteration in range(max_iterations):
-            pose = self.compute_fk(q)
+            transform, jacobian = self._forward_with_jacobian(q)
+            pose = Pose(transform[:3, 3], transform[:3, :3])
             position_error = target.position - pose.position
             if use_orientation:
                 # First-order world-frame rotation error. This is compatible
@@ -208,10 +249,9 @@ class CRTKComponent:
                     + np.cross(pose.orientation[:, 2], target.orientation[:, 2])
                 )
                 error = np.concatenate((position_error, orientation_error))
-                jacobian = self.compute_jacobian(q)
             else:
                 error = position_error
-                jacobian = self.compute_jacobian(q)[:3, :]
+                jacobian = jacobian[:3, :]
             error_norm = float(np.linalg.norm(error))
             if error_norm < tolerance:
                 return IKResult(q, True, iteration, error_norm, "pose converged" if use_orientation else "position converged")
@@ -237,17 +277,13 @@ class CRTKComponent:
         return result
 
     def _clip_joint_position(self, position: np.ndarray) -> np.ndarray:
-        lower = np.array([joint.lower for joint in self.config.joints])
-        upper = np.array([joint.upper for joint in self.config.joints])
-        return np.clip(position, lower, upper)
+        return np.clip(position, self._lower_limits, self._upper_limits)
 
     def _validate_joint_position(self, position: Iterable[float]) -> np.ndarray:
         result = np.asarray(list(position), dtype=float)
         if result.shape != (len(self.config.joints),):
             raise ValueError("joint position has the wrong size")
-        lower = np.array([joint.lower for joint in self.config.joints])
-        upper = np.array([joint.upper for joint in self.config.joints])
-        if np.any(result < lower) or np.any(result > upper):
+        if np.any(result < self._lower_limits) or np.any(result > self._upper_limits):
             raise ValueError("joint position exceeds configured limits")
         return result
 

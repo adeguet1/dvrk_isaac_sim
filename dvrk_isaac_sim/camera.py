@@ -209,18 +209,16 @@ class IsaacCameraPublisher:
 
         port = self.rtsp_port + index
         mount_path = self.rtsp_mount_path.rstrip("/")
-        if self.mode == "stereo":
-            mount_path = f"{mount_path}/{name}"
         graph_path = f"/World/CRTKROS/{self.node.get_name()}_{name}_RTSP"
         keys = og.Controller.Keys
-        create_nodes = [("OnTick", "omni.graph.action.OnTick"),
+        create_nodes = [("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
                         ("RTSPPublish", "isaacsim.streaming.rtsp.RTSPCameraHelper")]
-        connect = [("OnTick.outputs:tick", "RTSPPublish.inputs:execIn")]
+        connect = [("OnPlaybackTick.outputs:tick", "RTSPPublish.inputs:execIn")]
         values = [("RTSPPublish.inputs:renderProductPath", camera_prim)]
         if not existing_render_product:
             create_nodes.insert(1, ("RenderProduct", "isaacsim.core.nodes.IsaacCreateRenderProduct"))
             connect = [
-                ("OnTick.outputs:tick", "RenderProduct.inputs:execIn"),
+                ("OnPlaybackTick.outputs:tick", "RenderProduct.inputs:execIn"),
                 ("RenderProduct.outputs:execOut", "RTSPPublish.inputs:execIn"),
                 ("RenderProduct.outputs:renderProductPath", "RTSPPublish.inputs:renderProductPath"),
             ]
@@ -228,8 +226,7 @@ class IsaacCameraPublisher:
         graph, _, _, _ = og.Controller.edit(
             {
                 "graph_path": graph_path,
-                "evaluator_name": "push",
-                "pipeline_stage": og.GraphPipelineStage.GRAPH_PIPELINE_STAGE_ONDEMAND,
+                "evaluator_name": "execution",
             },
             {
                 keys.CREATE_NODES: create_nodes,
@@ -247,6 +244,9 @@ class IsaacCameraPublisher:
                 ],
             },
         )
+        # The helper attaches its writer on the first playback tick and is
+        # idempotent thereafter. Do not also evaluate this graph synchronously
+        # from publish(); doing so duplicates work on every rendered frame.
         self.node.get_logger().info(
             f"ECM RTSP stream: rtsp://<host>:{port}{mount_path}"
         )
@@ -363,13 +363,6 @@ class IsaacCameraPublisher:
                 compressed_publisher.publish(self._compressed_image_message(data, stamp))
             if info_publisher.get_subscription_count() > 0:
                 info_publisher.publish(self._camera_info(stamp))
-            if self.mode == "mono" and "rtsp" in self.transports:
-                import omni.graph.core as og
-                og.Controller.evaluate_sync(self._rtsp_graphs[0])
-        if self.mode == "stereo":
-            import omni.graph.core as og
-            if "rtsp" in self.transports:
-                og.Controller.evaluate_sync(self._rtsp_graphs[0])
         side_by_side_needed = (
             (self._side_by_side_publisher is not None
              and self._side_by_side_publisher.get_subscription_count() > 0)

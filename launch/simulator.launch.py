@@ -65,6 +65,9 @@ def _start_sim(context):
 
     command = [str(isaac_python), str(package_share / "scripts" / "simulator.py"),
                "--config", str(config_path), "--scene", str(scene_config)]
+    renderer = LaunchConfiguration("renderer").perform(context)
+    if renderer:
+        command.extend(["--renderer", renderer])
     if LaunchConfiguration("headless").perform(context).lower() in {"true", "1", "yes"}:
         command.append("--headless")
     duration = LaunchConfiguration("duration").perform(context)
@@ -106,6 +109,8 @@ def generate_launch_description():
                               description="Optional Isaac Sim path override"),
         DeclareLaunchArgument("scene", default_value="",
                               description="Scene YAML path or filename under share/scenes"),
+        DeclareLaunchArgument("renderer", default_value="",
+                              description="Optional renderer override"),
         DeclareLaunchArgument("headless", default_value="",
                               description="Optional headless override; otherwise use config"),
         DeclareLaunchArgument("duration", default_value="",
