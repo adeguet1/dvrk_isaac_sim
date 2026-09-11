@@ -445,6 +445,22 @@ def main() -> int:
         if fabric_visual is not None:
             print("Robot visual transforms: Isaac Fabric runtime updates enabled", flush=True)
 
+        # Start from the importer-authored zero-joint pose.  The configured
+        # home state is applied below through move_jp, once the USD/Fabric
+        # hierarchy and Isaac timeline are ready.
+        for _, component, _, _ in nodes:
+            component.model.prepare_startup_move()
+        with Sdf.ChangeBlock():
+            for _, component, visual, _ in nodes:
+                if visual is not None:
+                    measured = component.model.measured_js()
+                    visual.update(
+                        measured.names, measured.position,
+                        component.jaw_position,
+                    )
+        if fabric_visual is not None:
+            fabric_visual.flush()
+
         if not args.headless:
             from dvrk_isaac_sim.isaac_ui import IsaacCRTKWindow
             ui_window = IsaacCRTKWindow(
@@ -462,6 +478,21 @@ def main() -> int:
             timeline, args.simulation_rate_hz, args.render_rate_hz
         )
         timeline.play()
+        # Route the startup pose through the same move path used by the GUI
+        # and ROS move_jp callbacks.  Besides publishing the normal busy edge,
+        # this makes startup initialization observable to CRTK clients rather
+        # than silently changing only the internal model state.
+        with component_lock:
+            for _, component, _, _ in nodes:
+                if not component.command_joint_position(component.config.home_position):
+                    raise RuntimeError(
+                        f"{component.config.name}: failed to apply startup move_jp"
+                    )
+                print(
+                    f"{component.config.name}: startup move_jp -> "
+                    f"{component.config.home_position.tolist()}",
+                    flush=True,
+                )
         for _, component, _, _ in nodes:
             component.publish_tool_type()
         clock_publisher = nodes[0][0].create_publisher(Clock, "/clock", 10)

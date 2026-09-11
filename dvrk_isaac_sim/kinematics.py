@@ -197,6 +197,23 @@ class CRTKComponent:
         target = self._validate_joint_position(joint_position)
         self._target_q = target
 
+    def prepare_startup_move(self) -> None:
+        """Set the measured state to the zero pose before a startup move.
+
+        Isaac Sim uses the normal ``move_jp`` path to reach the configured
+        home pose.  Keeping measured and target joints equal at construction
+        time would make that startup command a no-op, so the simulator uses
+        this method immediately before issuing its initial command.
+        """
+        zero = np.zeros_like(self._q)
+        zero = self._validate_joint_position(zero)
+        self._q = zero
+        self._target_q = zero.copy()
+        self._qdot = np.zeros_like(zero)
+        self._cached_q = None
+        self._cached_transform = None
+        self._cached_jacobian = None
+
     def servo_jp(self, joint_position: Iterable[float]) -> None:
         self.move_jp(joint_position)
 
