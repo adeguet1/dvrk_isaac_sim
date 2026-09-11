@@ -115,11 +115,13 @@ Terminal 2, camera view:
 ```bash
 gst-launch-1.0  \
   rtspsrc location=rtsp://localhost:8554/ECM \
-    protocols=udp latency=0 drop-on-latency=true \
+    protocols=udp buffer-mode=none latency=0 drop-on-latency=true \
+    ntp-sync=false do-retransmission=false \
   ! rtph264depay wait-for-keyframe=true \
   ! h264parse \
+  ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream \
   ! nvh264dec max-display-delay=0 \
-  ! queue max-size-buffers=1 leaky=downstream \
+  ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream \
   ! videoconvert \
   ! autovideosink sync=false
 ```

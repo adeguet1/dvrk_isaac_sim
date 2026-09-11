@@ -343,24 +343,3 @@ ros2 topic pub --once /PSM1/move_jp sensor_msgs/msg/JointState \
 The corresponding `measured_js` and `measured_cp` values should move over
 subsequent simulation steps.
 
-### RTSP GStreamer client
-
-For an RTSP scene, start with this low-latency GStreamer client on the same or another PC:
-
-```bash
-gst-launch-1.0 -v \
-  rtspsrc location=rtsp://SIMULATOR_IP:8554/ECM \
-    protocols=udp latency=0 drop-on-latency=true \
-  ! rtph264depay wait-for-keyframe=true \
-  ! h264parse \
-  ! nvh264dec max-display-delay=0 \
-  ! queue max-size-buffers=1 leaky=downstream \
-  ! videoconvert \
-  ! autovideosink sync=false
-```
-
-Replace `SIMULATOR_IP` with the Isaac Sim host address. Ensure the client has the
-GStreamer RTP, RTSP, and NVIDIA H.264 decoder plugins installed. UDP with zero
-receiver buffering is recommended for low latency. If UDP is unavailable, use
-`protocols=tcp latency=50 drop-on-latency=true`; TCP is more reliable across
-restricted networks but may add latency.
