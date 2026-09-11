@@ -22,9 +22,9 @@ scene:
     baseline_m: 0.006
     publish_rate_hz: 30.0
     transports: [rtsp]
-    # Pre-encode in the render pipeline. Isaac Sim documents this as more
-    # efficient than handing raw CUDA frames to the RTSP server for encoding.
-    rtsp: {port: 8554, mount_path: /ECM, encoding: h264}
+    # Send raw CUDA frames to the RTSP server's low-latency encoder.  This is
+    # intentionally retained as an A/B test against render-pipeline H.264.
+    rtsp: {port: 8554, mount_path: /ECM, encoding: raw}
   robots:
     - config: share/arms/PSM1.yaml
       instrument: "420006"

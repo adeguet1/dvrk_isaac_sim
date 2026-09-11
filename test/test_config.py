@@ -49,7 +49,8 @@ def test_scene_resolution_and_scene_owned_variants():
     scene_path = resolve_scene_path(config_path, "PSM2_420093_mono.yaml")
     scene = load_scene(scene_path)
     assert scene.camera.mode == "mono"
-    assert scene.camera.as_dict().get("transports") == ["ros_raw", "ros_compressed", "rtsp"]
+    assert scene.camera.as_dict().get("transports") == ["rtsp"]
+    assert scene.camera.as_dict()["rtsp"]["encoding"] == "raw"
     assert [(robot.name, robot.instrument, robot.endoscope) for robot in scene.robots] == [
         ("PSM2", "420093", None),
         ("ECM", None, "Si_straight"),
@@ -80,12 +81,7 @@ def test_shipped_scenes_use_expected_camera_outputs_with_close_near_clip():
     for scene_path in available_scene_paths(config_path):
         camera = load_scene(scene_path).camera.as_dict()
 
-        if scene_path.name == "ECM_PSM1_PSM2_PSM3_stereo_rtsp.yaml":
-            assert camera["transports"] == ["rtsp"]
-            assert camera["rtsp"]["encoding"] == "h264"
-        else:
-            assert camera["transports"] == ["ros_raw", "ros_compressed", "rtsp"]
-            assert camera["ros_compressed"]["quality"] == 85
-
+        assert camera["transports"] == ["rtsp"]
+        assert camera["rtsp"]["encoding"] == "raw"
         assert camera["rtsp"]["mount_path"] == "/ECM"
         assert camera["near_clip_m"] == 0.005
